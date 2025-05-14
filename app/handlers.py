@@ -11,7 +11,7 @@ import app.keyboards as kb
 
 load_dotenv()
 admin_ids_raw = os.getenv("ADMIN_IDS", "")
-ADMIN_ID = set(int(admin_id.strip()) for admin_id in admin_ids_raw.split(",") if admin_id.strip().isdigit())
+ADMIN_ID = set(map(int, admin_ids_raw.split(",")))
 
 
 print(ADMIN_ID)
