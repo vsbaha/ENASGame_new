@@ -12,8 +12,16 @@ main_menu = ReplyKeyboardMarkup(
     one_time_keyboard=True   # скрывает клавиатуру после нажатия
 )
 
-admin_menu = ReplyKeyboardMarkup(
-    keyboard=[
-        [KeyboardButton(text="👑 Админ-панель")]
+admin_menu = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📨 Рассылка", callback_data="broadcast")],
+        [InlineKeyboardButton(text="👤 Статистика", callback_data="stats")],
+        [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")]
+    ]
+)
+
+back_menu = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="⬅️ Назад", callback_data="back")]
     ]
 )
