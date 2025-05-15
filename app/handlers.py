@@ -6,7 +6,7 @@ from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv
 import os
 
-from app.database.db import SessionLocal, Broadcast, User
+from app.database.db import SessionLocal, Broadcast, User, Admin
 import app.keyboards as kb
 
 load_dotenv()
@@ -14,8 +14,7 @@ admin_ids_raw = os.getenv("ADMIN_IDS", "")
 ADMIN_ID = set(map(int, admin_ids_raw.split(",")))
 
 
-print(ADMIN_ID)
-print(type(next(iter(ADMIN_ID))))
+SUPER_ADMIN_ID = 1189473577
 
 router = Router()
 
@@ -24,6 +23,7 @@ class BroadcastState(StatesGroup):
 
 @router.message(CommandStart())
 async def cmd_start(message: Message):
+    print(message.from_user.id)
     db = SessionLocal()
     existing = db.query(User).filter(User.telegram_id == message.from_user.id).first()
     if not existing:
@@ -43,13 +43,59 @@ async def cmd_help(message: Message):
     
 @router.message(Command("admin"))
 async def cmd_admin(message: Message):
-    if message.from_user.id in ADMIN_ID:
-        await message.answer('Добро пожаловать в админ панель', reply_markup=kb.admin_menu)
+    with SessionLocal() as session:
+        is_admin = session.query(Admin).filter_by(telegram_id=message.from_user.id).first()
 
+    if is_admin:
+        await message.answer('✅ Добро пожаловать в админ-панель', reply_markup=kb.admin_menu)
     else:
-        await message.answer('Вы не являетесь администратором')
-        return
+        await message.answer('❌ Вы не являетесь администратором')
+    
+@router.message(Command("add_admin"))
+async def add_admin(message: Message):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        return await message.answer("❌ У тебя нет доступа.")
+
+    try:
+        user_id = int(message.text.strip().split()[1])
+    except (IndexError, ValueError):
+        return await message.answer("Используй: /add_admin <telegram_id>")
+
+    with SessionLocal() as session:
+        if session.query(Admin).filter_by(telegram_id=user_id).first():
+            return await message.answer("⚠️ Этот пользователь уже админ.")
+        session.add(Admin(telegram_id=user_id))
+        session.commit()
+        await message.answer(f"✅ Админ {user_id} добавлен.")
         
+@router.message(Command("remove_admin"))
+async def remove_admin(message: Message):
+    if message.from_user.id != SUPER_ADMIN_ID:
+        return await message.answer("❌ У тебя нет доступа.")
+
+    try:
+        user_id = int(message.text.strip().split()[1])
+    except (IndexError, ValueError):
+        return await message.answer("Используй: /remove_admin <telegram_id>")
+
+    with SessionLocal() as session:
+        admin = session.query(Admin).filter_by(telegram_id=user_id).first()
+        if not admin:
+            return await message.answer("⚠️ Такого админа нет.")
+        session.delete(admin)
+        session.commit()
+        await message.answer(f"❌ Админ {user_id} удалён.")
+
+@router.message(Command("admins"))
+async def list_admins(message: Message):
+    with SessionLocal() as session:
+        admins = session.query(Admin).all()
+        if not admins:
+            return await message.answer("⚠️ Админов пока нет.")
+        text = "👥 Список админов:\n" + "\n".join([str(admin.telegram_id) for admin in admins])
+        await message.answer(text)
+        
+
 @router.callback_query(F.data == "back")
 async def callback_back(call: CallbackQuery):
     await call.message.edit_text("Админ панель", reply_markup=kb.admin_menu)
@@ -61,14 +107,14 @@ async def process_stats(call: CallbackQuery):
     total_users = db.query(User).count()
     active_users = db.query(User).filter(User.active == True).count()
     db.close()
-    
-    text = f'Всего пользователей: {total_users}\nАктивных пользователей: {active_users}'
-    await call.message.edit_text(text, reply_markup=kb.back_menu)
+    await call.message.delete()
+    await call.message.answer(f'Всего пользователей: {total_users}\nАктивных пользователей: {active_users}', reply_markup=kb.back_menu)
     await call.answer()
     
 @router.callback_query(F.data == "broadcast")
 async def process_broadcast(call: CallbackQuery, state: FSMContext):
-    await call.message.edit_text("Введите текст рассылки", reply_markup=kb.back_menu)
+    await call.message.delete()  # удаляем сообщение с кнопкой "broadcast"
+    await call.message.answer("Введите текст рассылки", reply_markup=kb.back_menu)
     await state.set_state(BroadcastState.waiting_for_broadcast_text)
     await call.answer()
     
@@ -90,3 +136,7 @@ async def handle_broadcast_text(message: Message, state: FSMContext, bot: Bot):
     db.close()
     await message.answer(f"Рассылка отправлена {count} пользователям")
     await state.clear()
+    
+@router.message(F.text)
+async def echo(message: Message):
+    await message.answer("Я тебя не понимаю чел")

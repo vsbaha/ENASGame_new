@@ -9,7 +9,6 @@ main_menu = ReplyKeyboardMarkup(
     ],
 
     resize_keyboard=True,    # подгоняет кнопки по ширине
-    one_time_keyboard=True   # скрывает клавиатуру после нажатия
 )
 
 admin_menu = InlineKeyboardMarkup(
@@ -19,6 +18,14 @@ admin_menu = InlineKeyboardMarkup(
         [InlineKeyboardButton(text="⚙️ Настройки", callback_data="settings")]
     ]
 )
+
+edit_tournament = InlineKeyboardMarkup(
+    inline_keyboard=[
+        [InlineKeyboardButton(text="📝 Редактировать", callback_data="edit")],
+        [InlineKeyboardButton(text="❌ Удалить", callback_data="delete")]
+    ]
+)
+
 
 back_menu = InlineKeyboardMarkup(
     inline_keyboard=[

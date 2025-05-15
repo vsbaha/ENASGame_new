@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine,  Column, Integer, String, DateTime, Boolean
+from sqlalchemy import create_engine,  Column, Integer, String, DateTime, Boolean, BigInteger
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 import datetime
@@ -16,6 +16,12 @@ class User(Base):
     name = Column(String, nullable=False)
     registered_at = Column(DateTime, default=datetime.datetime.now)
     active = Column(Boolean, default=True)
+    
+class Admin(Base):
+    __tablename__ = "admins"
+
+    id = Column(Integer, primary_key=True)
+    telegram_id = Column(BigInteger, unique=True, nullable=False)
     
 class Broadcast(Base):
     __tablename__ = "broadcasts"
