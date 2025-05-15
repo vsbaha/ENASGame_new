@@ -20,8 +20,10 @@ class User(Base):
 class Admin(Base):
     __tablename__ = "admins"
 
-    id = Column(Integer, primary_key=True)
-    telegram_id = Column(BigInteger, unique=True, nullable=False)
+    id = Column(Integer, primary_key=True, index=True)
+    telegram_id = Column(Integer, unique=True, nullable=False)
+    username = Column(String, nullable=True)
+    full_name = Column(String, nullable=True)
     
 class Broadcast(Base):
     __tablename__ = "broadcasts"

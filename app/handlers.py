@@ -64,9 +64,16 @@ async def add_admin(message: Message):
     with SessionLocal() as session:
         if session.query(Admin).filter_by(telegram_id=user_id).first():
             return await message.answer("⚠️ Этот пользователь уже админ.")
-        session.add(Admin(telegram_id=user_id))
+
+        session.add(Admin(
+            telegram_id=user_id,
+            username=message.from_user.username,
+            full_name=message.from_user.full_name
+        ))
         session.commit()
-        await message.answer(f"✅ Админ {user_id} добавлен.")
+
+    await message.answer(f"✅ Админ {user_id} добавлен.")
+
         
 @router.message(Command("remove_admin"))
 async def remove_admin(message: Message):
@@ -90,10 +97,20 @@ async def remove_admin(message: Message):
 async def list_admins(message: Message):
     with SessionLocal() as session:
         admins = session.query(Admin).all()
-        if not admins:
-            return await message.answer("⚠️ Админов пока нет.")
-        text = "👥 Список админов:\n" + "\n".join([str(admin.telegram_id) for admin in admins])
-        await message.answer(text)
+
+    if not admins:
+        return await message.answer("⚠️ Админов пока нет.")
+
+    text = "👥 Список админов:\n\n"
+    for admin in admins:
+        line = f"{admin.full_name or 'Имя неизвестно'}"
+        if admin.username:
+            line += f" (@{admin.username})"
+        line += f" — {admin.telegram_id}"
+        text += line + "\n"
+
+    await message.answer(text)
+
         
 
 @router.callback_query(F.data == "back")
