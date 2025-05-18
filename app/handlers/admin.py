@@ -9,6 +9,7 @@ from app.services.validators import is_admin
 from app.filters.admin import AdminFilter
 from app.states import CreateTournament
 from app.services.file_handling import save_file
+from app.services.notifications import notify_super_admins
 import logging
 import os
 
@@ -46,10 +47,25 @@ async def show_stats(call: CallbackQuery, session: AsyncSession):
 async def back_to_admin(call: CallbackQuery):
     await call.message.edit_text("⚙️ Админ-панель:", reply_markup=admin_main_menu())
 
-# Управление турнирами
+
 @router.callback_query(F.data == "manage_tournaments")
 async def manage_tournaments(call: CallbackQuery, session: AsyncSession):
-    tournaments = await session.scalars(select(Tournament))
+    """Управление турнирами (только одобренные для обычных админов)"""
+    user = await session.scalar(
+        select(User).where(User.telegram_id == call.from_user.id)
+    )
+    
+    # Для супер-админа показываем все турниры
+    if user.role == UserRole.SUPER_ADMIN:
+        tournaments = await session.scalars(select(Tournament))
+    # Для обычного админа — только одобренные или созданные им
+    else:
+        tournaments = await session.scalars(
+            select(Tournament)
+            .where(Tournament.status == TournamentStatus.APPROVED)
+            .where(Tournament.created_by == user.id)
+        )
+    
     await call.message.edit_text(
         "Управление турнирами:", 
         reply_markup=tournaments_management_kb(tournaments)
@@ -152,7 +168,10 @@ async def process_description(message: Message, state: FSMContext):
 async def finish_creation(message: Message, state: FSMContext, bot: Bot, session: AsyncSession):
     if message.document.mime_type != "application/pdf":
         return await message.answer("❌ Только PDF-файлы!")
-    user = await session.get(User, message.from_user.id)
+    
+    user = await session.scalar(
+        select(User).where(User.telegram_id == message.from_user.id))
+    
     if not user:
         await message.answer("❌ Пользователь не найден! Вызовите /start")
         await state.clear()
@@ -160,14 +179,13 @@ async def finish_creation(message: Message, state: FSMContext, bot: Bot, session
     
     file_path = await save_file(bot, message.document.file_id, "tournaments/regulations")
     data = await state.get_data()
-    user = await session.get(User, message.from_user.id)
 
     status = (
-        TournamentStatus.PENDING 
-        if user.role == UserRole.ADMIN 
-        else TournamentStatus.APPROVED
+        TournamentStatus.APPROVED 
+        if user.role == UserRole.SUPER_ADMIN 
+        else TournamentStatus.PENDING
     )
-    # Создаем турнир
+    
     tournament = Tournament(
         game_id=data['game_id'],
         name=data['name'],
@@ -177,29 +195,48 @@ async def finish_creation(message: Message, state: FSMContext, bot: Bot, session
         regulations_path=file_path,
         is_active=True,
         status=status,
-        created_by=message.from_user.id
+        created_by=user.id
     )
     
     session.add(tournament)
     await session.commit()
     
+    if status == TournamentStatus.PENDING:
+        # Передаем session в функцию
+        await notify_super_admins(
+            bot=bot,
+            text=f"Новый турнир на модерации: {data['name']}",
+            session=session 
+        )
+    
     await message.answer(
-        f"✅ Турнир <b>{data['name']}</b> успешно создан!\n"
+        f"✅ Турнир <b>{data['name']}</b> успешно создан, и был отправлен на модерацию!\n"
         f"Дата старта: {data['start_date'].strftime('%d.%m.%Y %H:%M')}",
         parse_mode="HTML"
     )
     await state.clear()
+
     
 @router.callback_query(F.data.startswith("edit_tournament_"))
 async def show_tournament_details(call: CallbackQuery, session: AsyncSession):
-    """Детальная информация о турнире"""
+    """Просмотр турнира (только если он одобрен или пользователь — супер-админ)"""
     tournament_id = int(call.data.split("_")[2])
     tournament = await session.get(Tournament, tournament_id)
+    user = await session.scalar(
+        select(User).where(User.telegram_id == call.from_user.id)
+    )
     
     if not tournament:
         await call.answer("❌ Турнир не найден!", show_alert=True)
         return
-
+    
+    # Обычный админ может редактировать только свои одобренные турниры
+    if user.role == UserRole.ADMIN and (
+        tournament.status != TournamentStatus.APPROVED 
+        or tournament.created_by != user.id
+    ):
+        await call.answer("🚫 Нет прав для редактирования!", show_alert=True)
+        return
     # Получаем связанную игру
     game = await session.get(Game, tournament.game_id)
     
@@ -226,11 +263,15 @@ async def show_tournament_details(call: CallbackQuery, session: AsyncSession):
 
     try:
         # Отправляем регламент
+        loading_msg = await call.message.answer("⏳ Загрузка регламента...")
         regulations = FSInputFile(tournament.regulations_path)
+        
         await call.message.answer_document(
+            
             document=regulations,
             caption="📄 Регламент турнира"
         )
+        await loading_msg.delete()
     except Exception as e:
         await call.message.answer("⚠️ Регламент не найден!")
 

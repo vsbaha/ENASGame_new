@@ -1,6 +1,6 @@
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
-from app.database.db import UserRole
+from app.database.db import UserRole, TournamentStatus
 
 
 def admin_main_menu() -> InlineKeyboardMarkup:
@@ -43,8 +43,9 @@ def tournament_actions_kb(tournament_id: int) -> InlineKeyboardMarkup:
 def tournaments_management_kb(tournaments) -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     for t in tournaments:
+        status = "🔄" if t.status == TournamentStatus.PENDING else "✅"
         builder.button(
-            text=f"{t.name} {'✅' if t.is_active else '❌'}",
+            text=f"{t.name} {status}",
             callback_data=f"edit_tournament_{t.id}"
         )
     builder.row(
@@ -92,7 +93,8 @@ def super_admin_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="👥 Управление админами", callback_data="manage_admins"),
-        InlineKeyboardButton(text="🔧 Обычное админ-меню", callback_data="admin_main_menu"),
+        InlineKeyboardButton(text="📋 Модерация турниров", callback_data="moderate_tournaments"),  # Новая кнопка
+        InlineKeyboardButton(text="🔧 Обычное админ-меню", callback_data="switch_to_admin_menu"),
         width=1
     )
     return builder.as_markup()
@@ -108,4 +110,24 @@ def manage_admins_kb(admins):
     builder.button(text="➕ Добавить админа", callback_data="add_admin")
     builder.button(text="◀️ Назад", callback_data="back_to_super_admin")
     builder.adjust(1)
+    return builder.as_markup()
+
+def back_to_super_admin_kb():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="◀️ Назад", callback_data="back_to_super_admin")
+    return builder.as_markup()
+
+def moderation_actions_kb(tournament_id: int) -> InlineKeyboardMarkup:
+    builder = InlineKeyboardBuilder()
+    builder.row(
+        InlineKeyboardButton(
+            text="✅ Одобрить", 
+            callback_data=f"approve_tournament_{tournament_id}"
+        ),
+        InlineKeyboardButton(
+            text="❌ Отклонить", 
+            callback_data=f"reject_tournament_{tournament_id}"
+        ),
+        width=2
+    )
     return builder.as_markup()

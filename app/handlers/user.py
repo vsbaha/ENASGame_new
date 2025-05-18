@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.states import RegisterTeam
 from app.services.file_handling import save_file
 from app.database import crud
+from app.database.db import TournamentStatus
 from app.services.notifications import notify_super_admins
 from app.services.validators import validate_team_players
 
@@ -69,7 +70,7 @@ async def show_tournaments(call: CallbackQuery, session: AsyncSession):
     tournaments = await session.scalars(
         select(Tournament)
         .where(Tournament.game_id == game_id)
-        .where(Tournament.is_active == True)
+        .where(Tournament.status == TournamentStatus.APPROVED)  # Только одобренные
     )
     
     if not tournaments:
