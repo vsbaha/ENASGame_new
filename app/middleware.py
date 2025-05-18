@@ -1,48 +1,56 @@
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery, PollAnswer, ChatMemberUpdated
-from typing import Callable, Awaitable, Any, Optional
+from aiogram.types import Message, CallbackQuery, ChatMemberUpdated
 from sqlalchemy.ext.asyncio import AsyncSession
-from .database.db import async_session_maker
-from app.database.db import UserRole, User
-from .services.validators import is_admin
+from sqlalchemy import select
+from app.database.db import User, UserRole
+from typing import Callable, Awaitable, Dict, Any
 import logging
-from sqlalchemy.exc import IntegrityError
-from datetime import datetime
 
-# app/middleware.py
+logger = logging.getLogger(__name__)
+
 class DatabaseMiddleware(BaseMiddleware):
-    def __init__(self, session_pool):
-        self.session_pool = session_pool
+    def __init__(self, session_maker):
+        self.session_maker = session_maker
 
-    async def __call__(self, handler, event, data):
-        async with self.session_pool() as session:
+    async def __call__(
+        self,
+        handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+        event: Any,
+        data: Dict[str, Any]
+    ) -> Any:
+        async with self.session_maker() as session:
             data["session"] = session
-            try:
-                return await handler(event, data)
-            finally:
-                await session.close()  # Закрываем сессию после обработки
-    
+            return await handler(event, data)
+
 class AdminCheckMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         session = data["session"]
-        
-        # Получаем user_id из события
+        bot = data["bot"]
         user_id = None
-        if event.message:
-            user_id = event.message.from_user.id
-        elif event.callback_query:
-            user_id = event.callback_query.from_user.id
+
+        # Пропускаем команду /start
+        if isinstance(event, Message) and event.text == "/start":
+            return await handler(event, data)
+
+        # Получаем user_id
+        if isinstance(event, (Message, CallbackQuery)):
+            user_id = event.from_user.id
         
         if not user_id:
-            await event.answer("🚫 Доступ запрещен!")
+            return await handler(event, data)  # Пропускаем события без user_id
+
+        # Проверка пользователя
+        try:
+            user = await session.scalar(
+                select(User).where(User.telegram_id == user_id))
+            
+            if not user or user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
+                await bot.send_message(user_id, "🚫 Недостаточно прав!")
+                return
+        except Exception as e:
+            logger.error(f"AdminCheck error: {e}")
             return
 
-        user = await session.get(User, user_id)
-        
-        if not user or user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
-            await event.answer("🚫 Недостаточно прав!")
-            return
-        
         return await handler(event, data)
 
 class ErrorHandlerMiddleware(BaseMiddleware):
@@ -50,8 +58,8 @@ class ErrorHandlerMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except Exception as e:
-            logging.error(f"Error: {e}", exc_info=True)
+            logger.error(f"Error: {e}", exc_info=True)
             bot = data.get("bot")
-            chat_id = event.from_user.id if hasattr(event, 'from_user') else None
-            if bot and chat_id:
-                await bot.send_message(chat_id, "⚠️ Произошла ошибка!")
+            if isinstance(event, (Message, CallbackQuery)):
+                await bot.send_message(event.from_user.id, "⚠️ Произошла ошибка!")
+            return

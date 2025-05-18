@@ -4,7 +4,6 @@ from aiogram.fsm.context import FSMContext
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-import uuid
 from app.database import crud
 from app.services.validators import is_admin
 from app.filters.admin import AdminFilter
@@ -282,6 +281,7 @@ async def back_to_tournaments_list(call: CallbackQuery, session: AsyncSession):
         logging.error(f"Back error: {e}")
         await call.answer("⚠️ Ошибка возврата!")
         
+@router.message(F.text == "create_tournament")
 async def create_tournament_handler(message: Message, session: AsyncSession):
     """Обработчик создания турнира с проверкой прав"""
     try:

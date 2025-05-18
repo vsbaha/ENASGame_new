@@ -1,6 +1,6 @@
 from sqlalchemy import select, update, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from .db import User, Game, Tournament, Team, Player
+from .db import User, Game, Tournament, Team, Player, UserRole
 from sqlalchemy import func
 
 async def get_user(session: AsyncSession, tg_id: int) -> User | None:
@@ -47,3 +47,18 @@ async def get_statistics(session: AsyncSession) -> dict:
         "active_tournaments": active_tournaments,
         "teams": teams_count
     }
+    
+async def update_user_role(
+    session: AsyncSession, 
+    username: str,  # Используем юзернейм вместо ID
+    new_role: UserRole
+) -> bool:
+    """Обновление роли пользователя по юзернейму"""
+    user = await session.scalar(
+        select(User).where(User.username == username))
+    
+    if not user:
+        return False
+    user.role = new_role
+    await session.commit()
+    return True

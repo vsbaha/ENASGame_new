@@ -12,6 +12,5 @@ from .admin import (
     confirm_action_kb,
     back_to_admin_kb,
     super_admin_menu,
-    manage_admins_kb,
-    admin_menu
+    manage_admins_kb
 )

@@ -1,7 +1,7 @@
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
-from app.database.db import Game, User  # Убедитесь, что модель Game существует
+from app.database.db import Game, User, UserRole  # Убедитесь, что модель Game существует
 
 async def validate_players_count(
     session: AsyncSession, 
@@ -22,10 +22,10 @@ def validate_date(date_str: str) -> datetime | None:
         return None
     
 async def is_admin(user_id: int, session: AsyncSession) -> bool:
-    """Проверка прав администратора"""
-    result = await session.execute(select(User).where(User.telegram_id == user_id))
-    user = result.scalar_one_or_none()
-    return user.is_admin if user else False
+    """Проверка прав администратора через роль"""
+    user = await session.scalar(
+        select(User).where(User.telegram_id == user_id))
+    return user.role in [UserRole.ADMIN, UserRole.SUPER_ADMIN] if user else False
 
 async def validate_team_players(
     session: AsyncSession,

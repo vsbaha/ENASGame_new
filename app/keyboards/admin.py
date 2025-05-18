@@ -2,15 +2,6 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from app.database.db import UserRole
 
-def admin_menu() -> InlineKeyboardMarkup:
-    """Клавиатура обычного админа"""
-    builder = InlineKeyboardBuilder()
-    builder.row(
-        InlineKeyboardButton(text="🏆 Управление турнирами", callback_data="manage_tournaments"),
-        InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
-        width=1
-    )
-    return builder.as_markup()
 
 def admin_main_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
@@ -101,19 +92,20 @@ def super_admin_menu() -> InlineKeyboardMarkup:
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="👥 Управление админами", callback_data="manage_admins"),
-        InlineKeyboardButton(text="🔧 Обычное админ-меню", callback_data="admin_menu"),
+        InlineKeyboardButton(text="🔧 Обычное админ-меню", callback_data="admin_main_menu"),
         width=1
     )
     return builder.as_markup()
 
-def manage_admins_kb(admins) -> InlineKeyboardMarkup:
+def manage_admins_kb(admins):
     builder = InlineKeyboardBuilder()
     for admin in admins:
-        status = "✅" if admin.role in [UserRole.ADMIN, UserRole.SUPER_ADMIN] else "❌"
+        status = "👑" if admin.role == UserRole.SUPER_ADMIN else "🛡️"
         builder.button(
             text=f"{admin.full_name} {status}",
             callback_data=f"toggle_admin_{admin.id}"
         )
+    builder.button(text="➕ Добавить админа", callback_data="add_admin")
     builder.button(text="◀️ Назад", callback_data="back_to_super_admin")
     builder.adjust(1)
     return builder.as_markup()

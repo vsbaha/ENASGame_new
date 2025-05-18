@@ -1,16 +1,14 @@
 from aiogram import Bot
-from app.database.db import async_session_maker, User
+from app.database.db import async_session_maker, User, UserRole
 from sqlalchemy import select
 import os
 
 async def notify_super_admins(bot: Bot, text: str):
-    """Отправка уведомлений всем супер-админам"""
+    """Уведомления супер-админов с использованием UserRole"""
     async with async_session_maker() as session:
-        result = await session.execute(
+        super_admins = await session.scalars(
             select(User.telegram_id)
-            .where(User.role == "super_admin")
+            .where(User.role == UserRole.SUPER_ADMIN)  # Исправлено
         )
-        super_admins = result.scalars().all()
-        
-    for admin_id in super_admins:
-        await bot.send_message(admin_id, text)
+        for admin_id in super_admins:
+            await bot.send_message(admin_id, text)
