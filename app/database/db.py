@@ -3,23 +3,38 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from sqlalchemy import ForeignKey, String, Text, DateTime, Boolean, BigInteger, CheckConstraint
 from datetime import datetime
 from typing import Optional, List
+from enum import Enum
+
 import os
 
 class Base(DeclarativeBase):
     pass
 
-DATABASE_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///./tournaments.db")
+DATABASE_URL = os.getenv("DB_URL", "sqlite+aiosqlite:///./admin.db")
 engine = create_async_engine(DATABASE_URL)
 async_session_maker = async_sessionmaker(engine, expire_on_commit=False)
 
+class UserRole(str, Enum):
+    USER = "user"
+    ADMIN = "admin"
+    SUPER_ADMIN = "super_admin"
+    
+class TournamentStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
-    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True)
+    telegram_id: Mapped[int] = mapped_column(BigInteger, unique=True, index=True)
     full_name: Mapped[str] = mapped_column(String(150))
     username: Mapped[Optional[str]] = mapped_column(String(32))
-    is_admin: Mapped[bool] = mapped_column(default=False)
     registered_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
+    role: Mapped[UserRole] = mapped_column(default=UserRole.USER)
+    added_by: Mapped[Optional[int]] = mapped_column(BigInteger)
+
+
 
 class Game(Base):
     __tablename__ = "games"
@@ -44,6 +59,8 @@ class Tournament(Base):
     is_active: Mapped[bool] = mapped_column(default=True)
     game: Mapped["Game"] = relationship(back_populates="tournaments")
     teams: Mapped[List["Team"]] = relationship(back_populates="tournament", cascade="all, delete-orphan")
+    status: Mapped[TournamentStatus] = mapped_column(default=TournamentStatus.PENDING)
+    created_by: Mapped[int] = mapped_column(BigInteger)  # ID создателя
 
 class Team(Base):
     __tablename__ = "teams"
@@ -70,6 +87,9 @@ class Broadcast(Base):
     message: Mapped[str] = mapped_column(Text)
     sent_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
     status: Mapped[str] = mapped_column(String(20), default="pending")  # Пример
+
+
+
 
 async def create_db():
     async with engine.begin() as conn:

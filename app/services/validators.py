@@ -26,3 +26,22 @@ async def is_admin(user_id: int, session: AsyncSession) -> bool:
     result = await session.execute(select(User).where(User.telegram_id == user_id))
     user = result.scalar_one_or_none()
     return user.is_admin if user else False
+
+async def validate_team_players(
+    session: AsyncSession,
+    game_id: int,
+    players_count: int
+) -> tuple[bool, str]:
+    """Проверка соответствия количества игроков требованиям игры"""
+    game = await session.get(Game, game_id)
+    
+    if not game:
+        return False, "Игра не найдена"
+    
+    if players_count < game.min_players:
+        return False, f"Минимальное количество игроков: {game.min_players}"
+    
+    if players_count > game.max_players:
+        return False, f"Максимальное количество игроков: {game.max_players}"
+    
+    return True, ""

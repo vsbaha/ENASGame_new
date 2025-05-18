@@ -7,3 +7,10 @@ class CreateTournament(StatesGroup):
     START_DATE = State()
     DESCRIPTION = State()
     REGULATIONS = State()
+    
+class RegisterTeam(StatesGroup):
+    SELECT_TOURNAMENT = State()
+    TEAM_NAME = State()
+    TEAM_LOGO = State()
+    ADD_PLAYERS = State()
+    CONFIRMATION = State()

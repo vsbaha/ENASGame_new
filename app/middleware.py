@@ -1,10 +1,13 @@
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
+from aiogram.types import Message, CallbackQuery, PollAnswer, ChatMemberUpdated
 from typing import Callable, Awaitable, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from .database.db import async_session_maker
+from app.database.db import UserRole, User
 from .services.validators import is_admin
 import logging
+from sqlalchemy.exc import IntegrityError
+from datetime import datetime
 
 # app/middleware.py
 class DatabaseMiddleware(BaseMiddleware):
@@ -13,34 +16,33 @@ class DatabaseMiddleware(BaseMiddleware):
 
     async def __call__(self, handler, event, data):
         async with self.session_pool() as session:
-            data["session"] = session  # Добавляем сессию в data
-            return await handler(event, data)
-
+            data["session"] = session
+            try:
+                return await handler(event, data)
+            finally:
+                await session.close()  # Закрываем сессию после обработки
+    
 class AdminCheckMiddleware(BaseMiddleware):
-    async def __call__(
-        self,
-        handler: Callable[[Any, dict], Awaitable[Any]],
-        event: Any,
-        data: dict,
-    ) -> Any:
-        # Проверяем наличие from_user
-        if not hasattr(event, 'from_user') or not event.from_user:
-            return await handler(event, data)
-
-        # Получаем сессию из data
-        session: AsyncSession = data.get("session")
-        if not session:
-            logging.error("Session not found in data!")
+    async def __call__(self, handler, event, data):
+        session = data["session"]
+        
+        # Получаем user_id из события
+        user_id = None
+        if event.message:
+            user_id = event.message.from_user.id
+        elif event.callback_query:
+            user_id = event.callback_query.from_user.id
+        
+        if not user_id:
+            await event.answer("🚫 Доступ запрещен!")
             return
 
-        # Проверяем права
-        if not await is_admin(event.from_user.id, session):  # Передаем session
-            if isinstance(event, Message):
-                await event.answer("❌ У вас нет прав администратора!")
-            elif isinstance(event, CallbackQuery):
-                await event.answer("❌ Доступ запрещен!", show_alert=True)
+        user = await session.get(User, user_id)
+        
+        if not user or user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
+            await event.answer("🚫 Недостаточно прав!")
             return
-
+        
         return await handler(event, data)
 
 class ErrorHandlerMiddleware(BaseMiddleware):

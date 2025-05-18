@@ -41,11 +41,10 @@ def tournaments_list_kb(tournaments: list) -> InlineKeyboardMarkup:
     return builder.as_markup()
 
 def tournament_details_kb(tournament_id: int) -> InlineKeyboardMarkup:
-    """Детали турнира"""
     builder = InlineKeyboardBuilder()
     builder.row(
         InlineKeyboardButton(text="📜 Регламент", callback_data=f"rules_{tournament_id}"),
-        InlineKeyboardButton(text="✅ Зарегистрироваться", callback_data=f"register_{tournament_id}"),
+        InlineKeyboardButton(text="✅ Зарегистрироваться", callback_data=f"register_{tournament_id}"),  # Добавлено
         width=1
     )
     builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_tournaments"))

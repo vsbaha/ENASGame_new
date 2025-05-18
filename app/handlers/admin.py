@@ -14,7 +14,7 @@ import logging
 import os
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder
-from app.database.db import Tournament, Game
+from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament
 from app.keyboards.admin import (
     admin_main_menu,
     tournaments_management_kb,
@@ -153,10 +153,21 @@ async def process_description(message: Message, state: FSMContext):
 async def finish_creation(message: Message, state: FSMContext, bot: Bot, session: AsyncSession):
     if message.document.mime_type != "application/pdf":
         return await message.answer("❌ Только PDF-файлы!")
+    user = await session.get(User, message.from_user.id)
+    if not user:
+        await message.answer("❌ Пользователь не найден! Вызовите /start")
+        await state.clear()
+        return
     
     file_path = await save_file(bot, message.document.file_id, "tournaments/regulations")
     data = await state.get_data()
-    
+    user = await session.get(User, message.from_user.id)
+
+    status = (
+        TournamentStatus.PENDING 
+        if user.role == UserRole.ADMIN 
+        else TournamentStatus.APPROVED
+    )
     # Создаем турнир
     tournament = Tournament(
         game_id=data['game_id'],
@@ -165,7 +176,9 @@ async def finish_creation(message: Message, state: FSMContext, bot: Bot, session
         start_date=data['start_date'],
         description=data['description'],
         regulations_path=file_path,
-        is_active=True
+        is_active=True,
+        status=status,
+        created_by=message.from_user.id
     )
     
     session.add(tournament)
@@ -268,3 +281,38 @@ async def back_to_tournaments_list(call: CallbackQuery, session: AsyncSession):
     except Exception as e:
         logging.error(f"Back error: {e}")
         await call.answer("⚠️ Ошибка возврата!")
+        
+async def create_tournament_handler(message: Message, session: AsyncSession):
+    """Обработчик создания турнира с проверкой прав"""
+    try:
+        # Получаем пользователя из БД
+        user = await session.get(User, message.from_user.id)
+        if not user:
+            await message.answer("❌ Пользователь не найден!")
+            return
+
+        # Проверяем роль пользователя
+        if user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
+            await message.answer("🚫 Недостаточно прав!")
+            return
+
+        # Определяем статус турнира
+        status = (
+            TournamentStatus.PENDING 
+            if user.role == UserRole.ADMIN 
+            else TournamentStatus.APPROVED
+        )
+
+        # Создаем турнир
+        new_tournament = Tournament(
+            name="Название турнира",
+            status=status,
+            created_by=user.id
+        )
+        
+        session.add(new_tournament)
+        await session.commit()
+        await message.answer("✅ Турнир создан!")
+
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {str(e)}")

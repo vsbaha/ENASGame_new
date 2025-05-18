@@ -6,7 +6,7 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.fsm.storage.memory import MemoryStorage
 from dotenv import load_dotenv
-from app.handlers import common, user, admin
+from app.handlers import common, user, admin, super_admin
 from app.database.db import create_db, async_session_maker
 from app.middleware import DatabaseMiddleware, AdminCheckMiddleware, ErrorHandlerMiddleware
 from logging.handlers import RotatingFileHandler
@@ -28,6 +28,7 @@ async def main():
     dp.include_router(common.router)
     dp.include_router(user.router)
     dp.include_router(admin.router)
+    dp.include_router(super_admin.router)
     admin.router.message.filter(AdminFilter())
     
     await dp.start_polling(bot)
