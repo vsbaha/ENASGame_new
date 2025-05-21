@@ -8,6 +8,7 @@ def admin_main_menu() -> InlineKeyboardMarkup:
     builder.row(
         InlineKeyboardButton(text="🏆 Управление турнирами", callback_data="manage_tournaments"),
         InlineKeyboardButton(text="📊 Статистика", callback_data="stats"),
+        InlineKeyboardButton(text="📝 Модерация команд", callback_data="moderate_teams"),  # Новая кнопка
         width=1
     )
     return builder.as_markup()
@@ -130,4 +131,11 @@ def moderation_actions_kb(tournament_id: int) -> InlineKeyboardMarkup:
         ),
         width=2
     )
+    return builder.as_markup()
+
+def team_request_kb(team_id: int):
+    builder = InlineKeyboardBuilder()
+    builder.button(text="✅ Одобрить", callback_data=f"approve_team_{team_id}")
+    builder.button(text="❌ Отклонить", callback_data=f"reject_team_{team_id}")
+    builder.adjust(2)
     return builder.as_markup()

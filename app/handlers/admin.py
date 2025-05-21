@@ -1,26 +1,29 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from app.database import crud
 from app.services.validators import is_admin
 from app.filters.admin import AdminFilter
+from aiogram.filters import StateFilter
 from app.states import CreateTournament
 from app.services.file_handling import save_file
 from app.services.notifications import notify_super_admins
 import logging
 import os
 
-from aiogram.utils.keyboard import InlineKeyboardBuilder
-from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament
+from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
+from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament, GameFormat, Team, User, Player
 from app.keyboards.admin import (
     admin_main_menu,
     tournaments_management_kb,
     tournament_actions_kb,
     confirm_action_kb,
-    back_to_admin_kb
+    back_to_admin_kb,
+    team_request_kb
 )
 
 router = Router()
@@ -101,33 +104,57 @@ async def start_creation(call: CallbackQuery, state: FSMContext, session: AsyncS
         logger.error(f"Error in start_creation: {e}")
         await call.answer("⚠️ Произошла ошибка!", show_alert=True)
 
-@router.callback_query(F.data.startswith("admin_select_game_"), CreateTournament.SELECT_GAME)
+@router.callback_query(
+    StateFilter(CreateTournament.SELECT_GAME),
+    F.data.startswith("admin_select_game_")
+)
 async def select_game(call: CallbackQuery, state: FSMContext, session: AsyncSession):
-    """Обработка выбора игры"""
-    try:
-        # Извлекаем ID игры из callback_data
-        game_id = int(call.data.split("_")[3])
-        logger.debug(f"Selected game ID: {game_id}")
-        
-        # Проверяем существование игры
-        game = await session.get(Game, game_id)
-        if not game:
-            await call.answer("❌ Игра не найдена!", show_alert=True)
-            return
+    game_id = int(call.data.split("_")[3])
+    game = await session.get(Game, game_id)
+    if not game:
+        await call.answer("❌ Игра не найдена!", show_alert=True)
+        return
 
-        # Обновляем состояние и запрашиваем название
-        await state.update_data(game_id=game_id)
-        await call.message.delete()
-        await call.message.answer(
-            f"🎮 Игра: <b>{game.name}</b>\n🏷 Введите название турнира:", 
-            parse_mode="HTML"
+    # Получаем форматы для выбранной игры
+    formats = await session.scalars(
+        select(GameFormat).where(GameFormat.game_id == game_id)
+    )
+    formats = list(formats)
+    if not formats:
+        await call.answer("❌ Нет форматов для этой игры!", show_alert=True)
+        return
+
+    # Клавиатура с форматами
+    builder = InlineKeyboardBuilder()
+    for fmt in formats:
+        builder.button(
+            text=f"{fmt.format_name} (до {fmt.max_players_per_team})",
+            callback_data=f"admin_select_format_{fmt.id}"
         )
-        await state.set_state(CreateTournament.NAME)
-        logger.info(f"Game {game_id} selected, waiting for name")
+    builder.adjust(1)
+    await call.message.edit_text(
+        f"🎮 Игра: <b>{game.name}</b>\nВыберите формат:",
+        parse_mode="HTML",
+        reply_markup=builder.as_markup()
+    )
+    await state.update_data(game_id=game_id)
+    await state.set_state(CreateTournament.SELECT_FORMAT)
 
-    except Exception as e:
-        logger.error(f"Error in select_game: {e}")
-        await call.answer("⚠️ Ошибка выбора игры!", show_alert=True)
+# Обработка выбора формата
+@router.callback_query(F.data.startswith("admin_select_format_"))
+async def select_format(call: CallbackQuery, state: FSMContext, session: AsyncSession):
+    format_id = int(call.data.split("_")[3])
+    fmt = await session.get(GameFormat, format_id)
+    if not fmt:
+        await call.answer("❌ Формат не найден!", show_alert=True)
+        return
+
+    await state.update_data(format_id=format_id)
+    await call.message.edit_text(
+        f"Формат выбран: <b>{fmt.format_name}</b>\n🏷 Введите название турнира:",
+        parse_mode="HTML"
+    )
+    await state.set_state(CreateTournament.NAME)
 
 # Обработка названия
 @router.message(CreateTournament.NAME)
@@ -188,6 +215,7 @@ async def finish_creation(message: Message, state: FSMContext, bot: Bot, session
     
     tournament = Tournament(
         game_id=data['game_id'],
+        format_id=data['format_id'],  # <--- добавьте это!
         name=data['name'],
         logo_path=data['logo_path'],
         start_date=data['start_date'],
@@ -321,39 +349,102 @@ async def back_to_tournaments_list(call: CallbackQuery, session: AsyncSession):
     except Exception as e:
         logging.error(f"Back error: {e}")
         await call.answer("⚠️ Ошибка возврата!")
-        
-@router.message(F.text == "create_tournament")
-async def create_tournament_handler(message: Message, session: AsyncSession):
-    """Обработчик создания турнира с проверкой прав"""
-    try:
-        # Получаем пользователя из БД
-        user = await session.get(User, message.from_user.id)
-        if not user:
-            await message.answer("❌ Пользователь не найден!")
-            return
 
-        # Проверяем роль пользователя
-        if user.role not in [UserRole.ADMIN, UserRole.SUPER_ADMIN]:
-            await message.answer("🚫 Недостаточно прав!")
-            return
+@router.callback_query(F.data == "team_requests")
+async def show_team_requests(call: CallbackQuery, session: AsyncSession):
+    """Показать заявки команд на участие в турнире"""
+    user = await session.scalar(
+        select(User).where(User.telegram_id == call.from_user.id)
+    )
+    
+    if user.role != UserRole.SUPER_ADMIN:
+        await call.answer("🚫 Доступ запрещен!", show_alert=True)
+        return
+    
+    # Получаем все турниры
+    tournaments = await session.scalars(select(Tournament))
+    
+    # Формируем список заявок
+    requests = []
+    for tournament in tournaments:
+        teams = await tournament.teams  # Загрузка связанных команд
+        for team in teams:
+            if team.status == "pending":
+                requests.append((tournament, team))
+    
+    if not requests:
+        await call.answer("📭 Нет новых заявок на участие в турнирах.")
+        return
 
-        # Определяем статус турнира
-        status = (
-            TournamentStatus.PENDING 
-            if user.role == UserRole.ADMIN 
-            else TournamentStatus.APPROVED
+    # Формируем сообщение с заявками
+    for tournament, team in requests:
+        creator = await session.get(User, tournament.created_by)
+        await call.message.bot.send_message(
+            creator.telegram_id,
+            f"📝 Новая команда хочет зарегистрироваться на ваш турнир: {tournament.name}\n"
+            f"Команда: {team.team_name}\n",
+            reply_markup=team_request_kb(team.id)
         )
+    
+    await call.answer("📬 Уведомления отправлены создателям турниров.")
 
-        # Создаем турнир
-        new_tournament = Tournament(
-            name="Название турнира",
-            status=status,
-            created_by=user.id
+@router.callback_query(F.data == "moderate_teams")
+async def show_pending_teams(call: CallbackQuery, session: AsyncSession):
+    """Список команд на модерации"""
+    # Для супер-админа — все команды, для админа — только свои турниры
+    user = await session.scalar(select(User).where(User.telegram_id == call.from_user.id))
+    if user.role == UserRole.SUPER_ADMIN:
+        teams = await session.scalars(
+            select(Team).where(Team.is_approved == False)
         )
-        
-        session.add(new_tournament)
-        await session.commit()
-        await message.answer("✅ Турнир создан!")
+    else:
+        # Только команды в турнирах, созданных этим админом
+        tournaments = await session.scalars(
+            select(Tournament.id).where(Tournament.created_by == user.id)
+        )
+        teams = await session.scalars(
+            select(Team).where(Team.is_approved == False, Team.tournament_id.in_(tournaments))
+        )
+    teams = list(teams)
+    if not teams:
+        await call.message.edit_text("📭 Нет новых заявок на участие в турнирах.", reply_markup=back_to_admin_kb())
+        return
 
-    except Exception as e:
-        await message.answer(f"⚠️ Ошибка: {str(e)}")
+    builder = InlineKeyboardBuilder()
+    for team in teams:
+        builder.button(
+            text=f"{team.team_name} (турнир ID: {team.tournament_id})",
+            callback_data=f"moderate_team_{team.id}"
+        )
+    builder.row(InlineKeyboardButton(text="◀️ Назад", callback_data="back_to_admin"))
+    await call.message.edit_text(
+        "📝 Заявки команд на модерации:",
+        reply_markup=builder.as_markup()
+    )
+
+@router.callback_query(F.data.startswith("moderate_team_"))
+async def moderate_team(call: CallbackQuery, session: AsyncSession):
+    team_id = int(call.data.split("_")[2])
+    team = await session.get(Team, team_id)
+    if not team:
+        await call.answer("Команда не найдена", show_alert=True)
+        return
+    tournament = await session.get(Tournament, team.tournament_id)
+    players = await session.scalars(select(Player).where(Player.team_id == team.id))
+    players = list(players)
+    player_usernames = []
+    for player in players:
+        user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
+        if user:
+            player_usernames.append(f"@{user.username or user.telegram_id}")
+    text = (
+        f"Команда: <b>{team.team_name}</b>\n"
+        f"Турнир: {tournament.name if tournament else team.tournament_id}\n"
+        f"Капитан: <a href='tg://user?id={team.captain_tg_id}'>{team.captain_tg_id}</a>\n"
+        f"Участники: {', '.join(player_usernames)}"
+    )
+    await call.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=team_request_kb(team.id)
+    )

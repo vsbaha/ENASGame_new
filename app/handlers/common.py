@@ -74,3 +74,8 @@ async def cmd_admin(message: Message, session: AsyncSession):
     else:
         await message.answer("❌ У вас нет доступа!")
         
+@router.message(F.text == "ℹ️ Помощь")
+async def support_handler(message: Message):
+    await message.answer(
+        "Если у вас возникли вопросы или нужна помощь, напишите в поддержку: @kkm1s"
+    )

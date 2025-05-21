@@ -36,21 +36,26 @@ class User(Base):
 
 
 
+class GameFormat(Base):
+    __tablename__ = "game_formats"
+    id: Mapped[int] = mapped_column(primary_key=True)
+    game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), index=True)
+    format_name: Mapped[str] = mapped_column(String(20))  # Например, "1x1", "2x2", "5x5"
+    max_players_per_team: Mapped[int]
+    game: Mapped["Game"] = relationship(back_populates="formats")
+
 class Game(Base):
     __tablename__ = "games"
-    __table_args__ = (
-        CheckConstraint('min_players <= max_players', name='min_max_players_check'),
-    )
     id: Mapped[int] = mapped_column(primary_key=True)
     name: Mapped[str] = mapped_column(String(50), unique=True, index=True)
-    min_players: Mapped[int]
-    max_players: Mapped[int]
+    formats: Mapped[List["GameFormat"]] = relationship(back_populates="game", cascade="all, delete-orphan")
     tournaments: Mapped[List["Tournament"]] = relationship(back_populates="game")
 
 class Tournament(Base):
     __tablename__ = "tournaments"
     id: Mapped[int] = mapped_column(primary_key=True)
     game_id: Mapped[int] = mapped_column(ForeignKey("games.id"), index=True)
+    format_id: Mapped[int] = mapped_column(ForeignKey("game_formats.id"), index=True)
     name: Mapped[str] = mapped_column(String(100))
     logo_path: Mapped[str] = mapped_column(String(200))
     start_date: Mapped[datetime]
@@ -58,9 +63,11 @@ class Tournament(Base):
     regulations_path: Mapped[str] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(default=True)
     game: Mapped["Game"] = relationship(back_populates="tournaments")
+    format: Mapped["GameFormat"] = relationship()
     teams: Mapped[List["Team"]] = relationship(back_populates="tournament", cascade="all, delete-orphan")
     status: Mapped[TournamentStatus] = mapped_column(default=TournamentStatus.PENDING)
     created_by: Mapped[int] = mapped_column(BigInteger)  # ID создателя
+
 
 class Team(Base):
     __tablename__ = "teams"
@@ -71,8 +78,10 @@ class Team(Base):
     logo_path: Mapped[str] = mapped_column(String(200))
     is_approved: Mapped[bool] = mapped_column(default=False)
     tournament: Mapped["Tournament"] = relationship(back_populates="teams")
-    players: Mapped[List["Player"]] = relationship(back_populates="team")
-
+    players: Mapped[List["Player"]] = relationship(
+        back_populates="team",
+        cascade="all, delete-orphan"
+    )
 class Player(Base):
     __tablename__ = "players"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -81,14 +90,6 @@ class Player(Base):
     is_substitute: Mapped[bool] = mapped_column(default=False)
     team: Mapped["Team"] = relationship(back_populates="players")
     
-class Broadcast(Base):
-    __tablename__ = "broadcasts"
-    id: Mapped[int] = mapped_column(primary_key=True)
-    message: Mapped[str] = mapped_column(Text)
-    sent_at: Mapped[datetime] = mapped_column(default=datetime.utcnow)
-    status: Mapped[str] = mapped_column(String(20), default="pending")  # Пример
-
-
 
 
 async def create_db():
