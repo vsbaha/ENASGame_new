@@ -15,7 +15,8 @@ from app.keyboards.user import (
     games_list_kb,
     tournament_details_kb,
     my_team_actions_kb,
-    edit_team_menu_kb
+    edit_team_menu_kb,
+    main_menu_kb
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.database.db import User, Game, Tournament, GameFormat, Team, Player
@@ -537,5 +538,6 @@ async def process_edit_team_players(message: Message, state: FSMContext, session
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(call: CallbackQuery):
-    await call.answer("Проверяем подписку...")  # Просто триггер для повторной проверки через middleware
-    # Ничего не делаем — middleware сам всё обработает
+    await call.answer("✅ Вы подписаны на все каналы!", show_alert=True)
+    await call.message.delete()
+    await call.message.answer("Проверка подписки завершена. Вы можете продолжать!", reply_markup=main_menu_kb())
