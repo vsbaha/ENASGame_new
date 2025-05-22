@@ -9,6 +9,7 @@ from app.database import crud
 from app.database.db import TournamentStatus
 from app.services.notifications import notify_super_admins
 from app.states import EditTeam
+import os
 
 # Импорты клавиатур
 from app.keyboards.user import (
@@ -374,6 +375,8 @@ async def delete_team(call: CallbackQuery, session: AsyncSession):
     if team.captain_tg_id != call.from_user.id:
         await call.answer("Только капитан может удалить команду!", show_alert=True)
         return
+    if team.logo_path and os.path.exists(team.logo_path):
+        os.remove(team.logo_path)
     await session.delete(team)
     await session.commit()
 
