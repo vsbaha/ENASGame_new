@@ -70,6 +70,10 @@ class ErrorHandlerMiddleware(BaseMiddleware):
 
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
+        # Пропускаем команду /start
+        if isinstance(event, Message) and event.text and event.text.startswith("/start"):
+            return await handler(event, data)
+
         bot = data.get("bot")
         user_id = None
         if isinstance(event, Message):

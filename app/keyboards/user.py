@@ -82,7 +82,7 @@ def subscription_kb():
     builder = InlineKeyboardBuilder()
     for ch in REQUIRED_CHANNELS:
         url = f"https://t.me/{ch.lstrip('@')}"
-        builder.button(text=f"Перейти в {ch}", url=url)
+        builder.button(text=f"{ch}", url=url)
     builder.button(text="🔄 Проверить подписку", callback_data="check_subscription")
     builder.adjust(1)
     return builder.as_markup()
