@@ -11,8 +11,6 @@ from app.filters.admin import SuperAdminFilter
 from app.states import AdminActions
 from aiogram.fsm.context import FSMContext
 
-import os
-
 router = Router()
 router.message.filter(SuperAdminFilter())
 

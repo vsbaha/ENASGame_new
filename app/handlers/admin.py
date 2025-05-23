@@ -1,7 +1,6 @@
 from aiogram import Router, F, Bot
 from aiogram.types import Message, CallbackQuery, FSInputFile
 from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
@@ -16,14 +15,15 @@ import logging
 import os
 
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
-from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament, GameFormat, Team, User, Player
+from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament, GameFormat, Team, User, Player, TeamStatus
 from app.keyboards.admin import (
     admin_main_menu,
     tournaments_management_kb,
     tournament_actions_kb,
-    confirm_action_kb,
     back_to_admin_kb,
-    team_request_kb
+    team_request_kb,
+    tournament_status_kb,
+    team_request_preview_kb
 )
 
 router = Router()
@@ -253,11 +253,11 @@ async def show_tournament_details(call: CallbackQuery, session: AsyncSession):
     user = await session.scalar(
         select(User).where(User.telegram_id == call.from_user.id)
     )
-    
+
     if not tournament:
         await call.answer("❌ Турнир не найден!", show_alert=True)
         return
-    
+
     # Обычный админ может редактировать только свои одобренные турниры
     if user.role == UserRole.ADMIN and (
         tournament.status != TournamentStatus.APPROVED 
@@ -265,10 +265,33 @@ async def show_tournament_details(call: CallbackQuery, session: AsyncSession):
     ):
         await call.answer("🚫 Нет прав для редактирования!", show_alert=True)
         return
+
     # Получаем связанную игру
     game = await session.get(Game, tournament.game_id)
-    
-    # Формируем текст
+
+    # 1. Отправляем логотип, если есть
+    if tournament.logo_path and os.path.exists(tournament.logo_path):
+        try:
+            logo = FSInputFile(tournament.logo_path)
+            await call.message.answer_photo(
+                photo=logo,
+                caption=f"🏆 {tournament.name}"
+            )
+        except Exception:
+            await call.message.answer("⚠️ Логотип не найден!")
+
+    # 2. Отправляем регламент, если есть
+    if tournament.regulations_path and os.path.exists(tournament.regulations_path):
+        try:
+            regulations = FSInputFile(tournament.regulations_path)
+            await call.message.answer_document(
+                document=regulations,
+                caption="📄 Регламент турнира"
+            )
+        except Exception:
+            await call.message.answer("⚠️ Регламент не найден!")
+
+    # 3. Описание и кнопки — последним сообщением (кнопки будут внизу)
     text = (
         f"🏆 <b>{tournament.name}</b>\n\n"
         f"🎮 Игра: {game.name if game else 'Не указана'}\n"
@@ -276,37 +299,10 @@ async def show_tournament_details(call: CallbackQuery, session: AsyncSession):
         f"📝 Описание: {tournament.description}\n"
         f"🔄 Статус: {'Активен ✅' if tournament.is_active else 'Неактивен ❌'}"
     )
-
-    try:
-        # Отправляем логотип
-        logo = FSInputFile(tournament.logo_path)
-        await call.message.answer_photo(
-            photo=logo,
-            caption=text,
-            parse_mode="HTML"
-        )
-    except Exception as e:
-        await call.message.answer("⚠️ Логотип не найден!")
-        await call.message.answer(text, parse_mode="HTML")
-
-    try:
-        # Отправляем регламент
-        loading_msg = await call.message.answer("⏳ Загрузка регламента...")
-        regulations = FSInputFile(tournament.regulations_path)
-        
-        await call.message.answer_document(
-            
-            document=regulations,
-            caption="📄 Регламент турнира"
-        )
-        await loading_msg.delete()
-    except Exception as e:
-        await call.message.answer("⚠️ Регламент не найден!")
-
-    # Кнопки управления
     await call.message.answer(
-        "Действия с турниром:",
-        reply_markup=tournament_actions_kb(tournament_id)
+        text,
+        parse_mode="HTML",
+        reply_markup=tournament_actions_kb(tournament_id, tournament.is_active)
     )
     
 @router.callback_query(F.data.startswith("delete_tournament_"))
@@ -350,6 +346,8 @@ async def back_to_tournaments_list(call: CallbackQuery, session: AsyncSession):
         logging.error(f"Back error: {e}")
         await call.answer("⚠️ Ошибка возврата!")
 
+
+
 @router.callback_query(F.data == "team_requests")
 async def show_team_requests(call: CallbackQuery, session: AsyncSession):
     """Показать заявки команд на участие в турнире"""
@@ -369,7 +367,7 @@ async def show_team_requests(call: CallbackQuery, session: AsyncSession):
     for tournament in tournaments:
         teams = await tournament.teams  # Загрузка связанных команд
         for team in teams:
-            if team.status == "pending":
+            if getattr(team, "status", None) == TeamStatus.PENDING:
                 requests.append((tournament, team))
     
     if not requests:
@@ -383,7 +381,7 @@ async def show_team_requests(call: CallbackQuery, session: AsyncSession):
             creator.telegram_id,
             f"📝 Новая команда хочет зарегистрироваться на ваш турнир: {tournament.name}\n"
             f"Команда: {team.team_name}\n",
-            reply_markup=team_request_kb(team.id)
+            reply_markup=team_request_preview_kb(team.id)
         )
     
     await call.answer("📬 Уведомления отправлены создателям турниров.")
@@ -395,7 +393,7 @@ async def show_pending_teams(call: CallbackQuery, session: AsyncSession):
     user = await session.scalar(select(User).where(User.telegram_id == call.from_user.id))
     if user.role == UserRole.SUPER_ADMIN:
         teams = await session.scalars(
-            select(Team).where(Team.is_approved == False)
+            select(Team).where(Team.status == TeamStatus.PENDING)
         )
     else:
         # Только команды в турнирах, созданных этим админом
@@ -403,7 +401,10 @@ async def show_pending_teams(call: CallbackQuery, session: AsyncSession):
             select(Tournament.id).where(Tournament.created_by == user.id)
         )
         teams = await session.scalars(
-            select(Team).where(Team.is_approved == False, Team.tournament_id.in_(tournaments))
+            select(Team).where(
+                Team.status == TeamStatus.PENDING,
+                Team.tournament_id.in_(tournaments)
+            )
         )
     teams = list(teams)
     if not teams:
@@ -441,6 +442,69 @@ async def moderate_team(call: CallbackQuery, session: AsyncSession):
         f"Команда: <b>{team.team_name}</b>\n"
         f"Турнир: {tournament.name if tournament else team.tournament_id}\n"
         f"Капитан: <a href='tg://user?id={team.captain_tg_id}'>{team.captain_tg_id}</a>\n"
+        f"Участники: {', '.join(player_usernames)}"
+    )
+    await call.message.edit_text(
+        text,
+        parse_mode="HTML",
+        reply_markup=team_request_kb(team.id)
+    )
+    
+@router.callback_query(F.data.regexp(r"^(de)?activate_tournament_\d+$"))
+async def toggle_tournament_status(call: CallbackQuery, session: AsyncSession):
+    data = call.data
+    tournament_id = int(data.split("_")[-1])
+    tournament = await session.get(Tournament, tournament_id)
+    user = await session.scalar(
+        select(User).where(User.telegram_id == call.from_user.id)
+    )
+    # Только супер-админ или создатель турнира
+    if not tournament or not (
+        user.role == UserRole.SUPER_ADMIN or tournament.created_by == user.id
+    ):
+        await call.answer("Нет прав для изменения статуса!", show_alert=True)
+        return
+
+    if data.startswith("deactivate"):
+        tournament.is_active = False
+        await session.commit()
+        await call.answer("Турнир деактивирован!", show_alert=True)
+    else:
+        tournament.is_active = True
+        await session.commit()
+        await call.answer("Турнир активирован!", show_alert=True)
+
+    # Обновить клавиатуру
+    await call.message.edit_reply_markup(
+        reply_markup=tournament_status_kb(tournament_id, tournament.is_active)
+    )
+    
+@router.callback_query(F.data.startswith("preview_team_"))
+async def preview_team(call: CallbackQuery, session: AsyncSession):
+    team_id = int(call.data.split("_")[2])
+    team = await session.get(Team, team_id)
+    if not team:
+        await call.answer("Команда не найдена", show_alert=True)
+        return
+    tournament = await session.get(Tournament, team.tournament_id)
+    players = await session.scalars(select(Player).where(Player.team_id == team.id))
+    players = list(players)
+    player_usernames = []
+    captain = await session.scalar(select(User).where(User.telegram_id == team.captain_tg_id))
+    if captain and captain.username:
+        captain_info = f"@{captain.username}"
+    elif captain and captain.full_name:
+        captain_info = captain.full_name
+    else:
+        captain_info = str(team.captain_tg_id)
+    for player in players:
+        user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
+        if user:
+            player_usernames.append(f"@{user.username or user.telegram_id}")
+    text = (
+        f"Команда: <b>{team.team_name}</b>\n"
+        f"Турнир: {tournament.name if tournament else team.tournament_id}\n"
+        f"Капитан: {captain_info}\n"
         f"Участники: {', '.join(player_usernames)}"
     )
     await call.message.edit_text(

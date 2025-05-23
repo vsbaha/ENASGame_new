@@ -1,6 +1,6 @@
-from sqlalchemy import select, update, delete
+from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from .db import User, Game, Tournament, Team, Player, UserRole
+from .db import User, Tournament, Team, Player, UserRole
 from sqlalchemy import func
 
 async def get_user(session: AsyncSession, tg_id: int) -> User | None:

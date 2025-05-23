@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.states import RegisterTeam
 from app.services.file_handling import save_file
 from app.database import crud
-from app.database.db import TournamentStatus
+from app.database.db import TournamentStatus, TeamStatus
 from app.services.notifications import notify_super_admins
 from app.states import EditTeam
 import os
@@ -17,11 +17,13 @@ from app.keyboards.user import (
     tournament_details_kb,
     my_team_actions_kb,
     edit_team_menu_kb,
-    main_menu_kb
+    main_menu_kb,
+    captain_groups_url_kb
+    
 )
+from app.keyboards.admin import team_request_kb, team_request_preview_kb
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from app.database.db import User, Game, Tournament, GameFormat, Team, Player
-from aiogram.fsm.state import State, StatesGroup
 
 
 
@@ -127,7 +129,6 @@ async def show_tournaments_by_format(call: CallbackQuery, session: AsyncSession,
 @router.callback_query(F.data.startswith("user_view_tournament_"))
 async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, session: AsyncSession):
     tournament_id = int(call.data.split("_")[3])
-    # 1. Показываем сообщение о загрузке
     loading_msg = await call.message.answer("⏳ Загружаем данные о турнире...")
 
     tournament = await session.get(Tournament, tournament_id)
@@ -136,15 +137,8 @@ async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, s
         await call.answer("Турнир недоступен для регистрации", show_alert=True)
         return
 
-    # Формируем текст с информацией о турнире
-    text = (
-        f"🏅 <b>{tournament.name}</b>\n"
-        f"🕒 Дата начала: {tournament.start_date.strftime('%d.%m.%Y %H:%M')}\n"
-        f"📝 Описание: {tournament.description}\n"
-    )
-
-    # Отправляем лого, если есть
-    if tournament.logo_path:
+    # 1. Отправляем фото, если есть
+    if tournament.logo_path and os.path.exists(tournament.logo_path):
         try:
             logo = FSInputFile(tournament.logo_path)
             await call.message.answer_photo(
@@ -152,10 +146,10 @@ async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, s
                 caption=f"Логотип турнира: {tournament.name}"
             )
         except Exception:
-            await call.message.answer("⚠️ Логотип не найден!")
+            pass
 
-    # Отправляем регламент, если есть
-    if tournament.regulations_path:
+    # 2. Отправляем регламент, если есть
+    if tournament.regulations_path and os.path.exists(tournament.regulations_path):
         try:
             regulations = FSInputFile(tournament.regulations_path)
             await call.message.answer_document(
@@ -163,9 +157,15 @@ async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, s
                 caption="📄 Регламент турнира"
             )
         except Exception:
-            await call.message.answer("⚠️ Регламент не найден!")
+            pass
 
-    # Клавиатура с кнопками
+    # 3. Описание и кнопки — последним сообщением (кнопки будут внизу)
+    text = (
+        f"🏅 <b>{tournament.name}</b>\n"
+        f"🕒 Дата начала: {tournament.start_date.strftime('%d.%m.%Y %H:%M')}\n"
+        f"📝 Описание: {tournament.description}\n"
+    )
+
     builder = InlineKeyboardBuilder()
     builder.button(text="✅ Начать регистрацию", callback_data=f"register_{tournament_id}")
     builder.button(text="❌ Отмена", callback_data="back_to_games")
@@ -177,8 +177,6 @@ async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, s
         reply_markup=builder.as_markup()
     )
     await state.update_data(tournament_id=tournament_id)
-
-    # 2. Удаляем сообщение о загрузке
     await loading_msg.delete()
 
 @router.message(RegisterTeam.TEAM_NAME)
@@ -241,10 +239,11 @@ async def process_players(message: Message, state: FSMContext, session: AsyncSes
     await notify_super_admins(
         bot=bot,
         text=f"Новая команда зарегистрирована на турнир {tournament.name}!",
-        session=session
+        session=session,
+        reply_markup=team_request_preview_kb(team.id)
     )
 
-    await message.answer("Заявка отправлена организатору турнира и супер-админам. Ожидайте подтверждения.")
+    await message.answer("Заявка отправлена организатору турнира и админам. Ожидайте подтверждения.")
     await state.clear()
 
 @router.message(F.text == "👥 Мои команды")
@@ -294,10 +293,18 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
     is_captain = team.captain_tg_id == call.from_user.id
 
     # Формируем текст
+    captain = await session.scalar(select(User).where(User.telegram_id == team.captain_tg_id))
+    if captain and captain.username:
+        captain_info = f"@{captain.username}"
+    elif captain and captain.full_name:
+        captain_info = captain.full_name
+    else:
+        captain_info = str(team.captain_tg_id)
+
     text = (
         f"🏅 <b>{team.team_name}</b>\n"
         f"Турнир: <b>{tournament.name if tournament else team.tournament_id}</b>\n"
-        f"Капитан: <a href='tg://user?id={team.captain_tg_id}'>{team.captain_tg_id}</a>\n"
+        f"Капитан: {captain_info}\n"
         f"Участники: {', '.join(player_usernames)}"
     )
 
@@ -344,11 +351,21 @@ async def approve_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
     if not team:
         await call.answer("Команда не найдена", show_alert=True)
         return
-    team.is_approved = True
+    # Проверка, что команда ещё не обработана
+    if team.status != TeamStatus.PENDING:
+        await call.answer("Заявка уже обработана!", show_alert=True)
+        await call.message.delete()
+        return
+    team.status = TeamStatus.APPROVED
     await session.commit()
     await call.answer("Команда одобрена!")
+    await call.message.delete()
     # Уведомление капитану
-    await bot.send_message(team.captain_tg_id, f"🎉 Ваша команда '{team.team_name}' одобрена для участия в турнире!")
+    await bot.send_message(
+        team.captain_tg_id,
+        f"🎉 Ваша команда '{team.team_name}' одобрена для участия в турнире! Вы приглашены в группу капитанов команд",
+        reply_markup=captain_groups_url_kb()
+    )
 
 @router.callback_query(F.data.startswith("reject_team_"))
 async def reject_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
@@ -357,14 +374,21 @@ async def reject_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
     if not team:
         await call.answer("Команда не найдена", show_alert=True)
         return
-    captain_id = team.captain_tg_id
-    team_name = team.team_name
-    await session.delete(team)
+    # Проверка, что команда ещё не обработана
+    if team.status != TeamStatus.PENDING:
+        await call.answer("Заявка уже обработана!", show_alert=True)
+        await call.message.delete()
+        return
+    team.status = TeamStatus.REJECTED
     await session.commit()
-    await call.answer("Команда отклонена и удалена.")
+    await call.answer("Команда отклонена.")
+    await call.message.delete()
     # Уведомление капитану
-    await bot.send_message(captain_id, f"❌ Ваша команда '{team_name}' отклонена организатором турнира.")
-    
+    await bot.send_message(
+        team.captain_tg_id,
+        f"❌ Ваша команда '{team.team_name}' отклонена организатором турнира."
+    )
+
 @router.callback_query(F.data.startswith("delete_team_"))
 async def delete_team(call: CallbackQuery, session: AsyncSession):
     team_id = int(call.data.split("_")[2])

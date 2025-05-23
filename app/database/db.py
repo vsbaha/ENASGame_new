@@ -1,6 +1,6 @@
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import ForeignKey, String, Text, DateTime, Boolean, BigInteger, CheckConstraint
+from sqlalchemy import ForeignKey, String, Text , BigInteger
 from datetime import datetime
 from typing import Optional, List
 from enum import Enum
@@ -24,6 +24,11 @@ class TournamentStatus(str, Enum):
     APPROVED = "approved"
     REJECTED = "rejected"
     
+class TeamStatus(str, Enum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+
 class User(Base):
     __tablename__ = "users"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -69,6 +74,8 @@ class Tournament(Base):
     created_by: Mapped[int] = mapped_column(BigInteger)  # ID создателя
 
 
+
+
 class Team(Base):
     __tablename__ = "teams"
     id: Mapped[int] = mapped_column(primary_key=True)
@@ -76,7 +83,7 @@ class Team(Base):
     captain_tg_id: Mapped[int] = mapped_column(BigInteger, index=True)
     team_name: Mapped[str] = mapped_column(String(50))
     logo_path: Mapped[str] = mapped_column(String(200))
-    is_approved: Mapped[bool] = mapped_column(default=False)
+    status: Mapped[TeamStatus] = mapped_column(default=TeamStatus.PENDING)  # <--- добавьте это поле
     tournament: Mapped["Tournament"] = relationship(back_populates="teams")
     players: Mapped[List["Player"]] = relationship(
         back_populates="team",
