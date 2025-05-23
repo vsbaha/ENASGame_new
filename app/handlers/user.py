@@ -246,15 +246,17 @@ async def process_players(message: Message, state: FSMContext, session: AsyncSes
     await message.answer("Заявка отправлена организатору турнира и админам. Ожидайте подтверждения.")
     await state.clear()
 
+
 @router.message(F.text == "👥 Мои команды")
 async def my_teams(message: Message, session: AsyncSession):
     teams = await session.scalars(
         select(Team)
         .where(
-            (Team.captain_tg_id == message.from_user.id) |
-            (Team.id.in_(
+            ((Team.captain_tg_id == message.from_user.id) |
+             (Team.id.in_(
                 select(Player.team_id).where(Player.user_id == message.from_user.id)
-            ))
+             )))
+            & (Team.status == TeamStatus.APPROVED)
         )
     )
     teams = list(teams)
@@ -282,6 +284,12 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
     if not team:
         await call.answer("Команда не найдена", show_alert=True)
         return
+    # Проверка статуса
+    if team.status == TeamStatus.REJECTED:
+        await call.answer("Эта команда была отклонена и недоступна для просмотра.", show_alert=True)
+        await call.message.delete()
+        return
+
     tournament = await session.get(Tournament, team.tournament_id)
     players = await session.scalars(select(Player).where(Player.team_id == team.id))
     players = list(players)
@@ -308,7 +316,7 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
         f"Участники: {', '.join(player_usernames)}"
     )
 
-    # Отправляем лого, если есть
+    # 1. Отправляем лого, если есть
     if team.logo_path:
         try:
             logo = FSInputFile(team.logo_path)
@@ -319,7 +327,7 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
         except Exception:
             await call.message.answer("⚠️ Логотип команды не найден!")
 
-    # Отправляем регламент турнира, если есть
+    # 2. Отправляем регламент турнира, если есть
     if tournament and tournament.regulations_path:
         try:
             regulations = FSInputFile(tournament.regulations_path)
@@ -330,6 +338,7 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
         except Exception:
             await call.message.answer("⚠️ Регламент турнира не найден!")
 
+    # 3. Описание и кнопки — последним сообщением (кнопки будут внизу)
     await call.message.answer(
         text,
         parse_mode="HTML",
