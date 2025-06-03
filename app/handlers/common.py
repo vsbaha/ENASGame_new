@@ -36,7 +36,7 @@ async def cmd_start(message: Message, session: AsyncSession):
             new_user = User(
                 telegram_id=message.from_user.id,
                 full_name=message.from_user.full_name,
-                username=message.from_user.username,
+                username = message.from_user.username if message.from_user.username else message.from_user.full_name,
                 role=UserRole.SUPER_ADMIN if message.from_user.id in SUPER_ADMINS else UserRole.USER
             )
             session.add(new_user)
@@ -77,5 +77,5 @@ async def cmd_admin(message: Message, session: AsyncSession):
 @router.message(F.text == "ℹ️ Помощь")
 async def support_handler(message: Message):
     await message.answer(
-        "Если у вас возникли вопросы или нужна помощь, напишите в поддержку: @kkm1s, @BBNK_1"
+        "Если у вас возникли вопросы или нужна помощь, напишите в поддержку: @kkm1s, @BBNK_1 \nЕсли вам нужна помощь связанная с работой бота, напишите в @soquoru",
     )

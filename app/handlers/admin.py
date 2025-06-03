@@ -6,14 +6,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
 from app.database import crud
 from app.services.validators import is_admin
-from app.filters.admin import AdminFilter
+from app.filters.admin import AdminFilter, SuperAdminFilter
+from app.database.crud import add_to_blacklist, remove_from_blacklist
 from aiogram.filters import StateFilter
 from app.states import CreateTournament
 from app.services.file_handling import save_file
 from app.services.notifications import notify_super_admins
 import logging
 import os
-
 from aiogram.utils.keyboard import InlineKeyboardBuilder, InlineKeyboardButton
 from app.database.db import Tournament, Game, TournamentStatus, UserRole, User, Tournament, GameFormat, Team, User, Player, TeamStatus
 from app.keyboards.admin import (
@@ -438,10 +438,20 @@ async def moderate_team(call: CallbackQuery, session: AsyncSession):
         user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
         if user:
             player_usernames.append(f"@{user.username or user.telegram_id}")
+
+    # Получаем капитана
+    captain = await session.scalar(select(User).where(User.telegram_id == team.captain_tg_id))
+    if captain and captain.username:
+        captain_info = f"@{captain.username}"
+    elif captain and captain.full_name:
+        captain_info = captain.full_name
+    else:
+        captain_info = str(team.captain_tg_id)
+
     text = (
         f"Команда: <b>{team.team_name}</b>\n"
         f"Турнир: {tournament.name if tournament else team.tournament_id}\n"
-        f"Капитан: <a href='tg://user?id={team.captain_tg_id}'>{team.captain_tg_id}</a>\n"
+        f"Капитан: {captain_info}\n"
         f"Участники: {', '.join(player_usernames)}"
     )
     await call.message.edit_text(
@@ -483,13 +493,16 @@ async def toggle_tournament_status(call: CallbackQuery, session: AsyncSession):
 async def preview_team(call: CallbackQuery, session: AsyncSession):
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
-    if not team:
-        await call.answer("Команда не найдена", show_alert=True)
-        return
     tournament = await session.get(Tournament, team.tournament_id)
     players = await session.scalars(select(Player).where(Player.team_id == team.id))
     players = list(players)
     player_usernames = []
+    for player in players:
+        user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
+        if user:
+            player_usernames.append(f"@{user.username or user.telegram_id}")
+
+    # Получаем капитана
     captain = await session.scalar(select(User).where(User.telegram_id == team.captain_tg_id))
     if captain and captain.username:
         captain_info = f"@{captain.username}"
@@ -497,18 +510,72 @@ async def preview_team(call: CallbackQuery, session: AsyncSession):
         captain_info = captain.full_name
     else:
         captain_info = str(team.captain_tg_id)
-    for player in players:
-        user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
-        if user:
-            player_usernames.append(f"@{user.username or user.telegram_id}")
+
+    # 1. Отправляем лого команды, если есть
+    if team.logo_path:
+        try:
+            logo = FSInputFile(team.logo_path)
+            await call.message.answer_photo(
+                photo=logo,
+                caption=f"Логотип команды: {team.team_name}"
+            )
+        except Exception:
+            await call.message.answer("⚠️ Логотип команды не найден!")
+
+    # 2. Информация о команде и кнопки
     text = (
         f"Команда: <b>{team.team_name}</b>\n"
         f"Турнир: {tournament.name if tournament else team.tournament_id}\n"
         f"Капитан: {captain_info}\n"
         f"Участники: {', '.join(player_usernames)}"
     )
-    await call.message.edit_text(
+    await call.message.answer(
         text,
         parse_mode="HTML",
         reply_markup=team_request_kb(team.id)
     )
+    await call.answer()
+    
+@router.message(F.text.startswith("/get_user"))
+async def get_user_by_id(message: Message, session: AsyncSession):
+    try:
+        parts = message.text.strip().split()
+        if len(parts) != 2:
+            await message.answer("Используйте: /get_user <tg_id>")
+            return
+        tg_id = int(parts[1])
+    except Exception:
+        await message.answer("Некорректный формат команды.")
+        return
+
+    user = await session.scalar(select(User).where(User.telegram_id == tg_id))
+    if not user:
+        await message.answer("Пользователь не найден.")
+        return
+
+    username = user.username or f"(нет username, id: {user.telegram_id})"
+    await message.answer(f"Username: @{username}" if user.username else f"Username не задан. Telegram ID: {user.telegram_id}")
+    
+
+
+from app.filters.admin import SuperAdminFilter
+
+@router.message(SuperAdminFilter(), F.text.startswith("/ban"))
+async def ban_user(message: Message, session: AsyncSession):
+    try:
+        parts = message.text.split(maxsplit=2)
+        user_id = int(parts[1])
+        reason = parts[2] if len(parts) > 2 else "Без причины"
+        await add_to_blacklist(session, user_id, message.from_user.id, reason)
+        await message.answer(f"Пользователь {user_id} забанен. Причина: {reason}")
+    except Exception:
+        await message.answer("Используйте: /ban <user_id> <причина>")
+
+@router.message(SuperAdminFilter(), F.text.startswith("/unban"))
+async def unban_user(message: Message, session: AsyncSession):
+    try:
+        user_id = int(message.text.split()[1])
+        await remove_from_blacklist(session, user_id)
+        await message.answer(f"Пользователь {user_id} удалён из блек-листа.")
+    except Exception:
+        await message.answer("Используйте: /unban <user_id>")

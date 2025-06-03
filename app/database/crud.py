@@ -1,6 +1,6 @@
 from sqlalchemy import select, delete
 from sqlalchemy.ext.asyncio import AsyncSession
-from .db import User, Tournament, Team, Player, UserRole
+from .db import User, Tournament, Team, Player, UserRole, BlackList, TeamStatus
 from sqlalchemy import func
 
 async def get_user(session: AsyncSession, tg_id: int) -> User | None:
@@ -36,16 +36,19 @@ async def add_players_to_team(session: AsyncSession, team_id: int, players: list
     
 async def get_statistics(session: AsyncSession) -> dict:
     """Сбор статистики"""
-    users_count = await session.scalar(select(func.count(User.id)))
+    users = await session.scalar(select(func.count(User.id)))
     active_tournaments = await session.scalar(
         select(func.count(Tournament.id))
         .where(Tournament.is_active == True)
     )
-    teams_count = await session.scalar(select(func.count(Team.id)))
+    # Считаем только команды со статусом APPROVED
+    teams = await session.scalar(
+        select(func.count(Team.id)).where(Team.status == TeamStatus.APPROVED)
+    )
     return {
-        "users": users_count,
+        "users": users,
         "active_tournaments": active_tournaments,
-        "teams": teams_count
+        "teams": teams
     }
     
 async def update_user_role(
@@ -62,3 +65,20 @@ async def update_user_role(
     user.role = new_role
     await session.commit()
     return True
+
+async def add_to_blacklist(session, user_id: int, banned_by: int, reason: str = None):
+    session.add(BlackList(user_id=user_id, banned_by=banned_by, reason=reason))
+    await session.commit()
+
+async def remove_from_blacklist(session, user_id: int):
+    await session.execute(
+        BlackList.__table__.delete().where(BlackList.user_id == user_id)
+    )
+    await session.commit()
+
+async def is_blacklisted(session, user_id: int) -> bool:
+    res = await session.get(BlackList, user_id)
+    return res is not None
+
+async def get_blacklist_entry(session, user_id: int):
+    return await session.get(BlackList, user_id)

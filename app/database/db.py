@@ -1,6 +1,6 @@
 from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
-from sqlalchemy import ForeignKey, String, Text , BigInteger
+from sqlalchemy import ForeignKey, String, Text , BigInteger, DateTime
 from datetime import datetime
 from typing import Optional, List
 from enum import Enum
@@ -39,7 +39,12 @@ class User(Base):
     role: Mapped[UserRole] = mapped_column(default=UserRole.USER)
     added_by: Mapped[Optional[int]] = mapped_column(BigInteger)
 
-
+class BlackList(Base):
+    __tablename__ = "blacklist"
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    banned_by: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.telegram_id"))
+    reason: Mapped[str] = mapped_column(String(255), nullable=True)
+    ban_time: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class GameFormat(Base):
     __tablename__ = "game_formats"

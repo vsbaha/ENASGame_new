@@ -9,22 +9,27 @@ from aiogram.dispatcher.middlewares.base import BaseMiddleware
 from app.keyboards.user import subscription_kb
 import os
 from dotenv import load_dotenv
+from app.database.crud import is_blacklisted, get_blacklist_entry
+
 load_dotenv()
 logger = logging.getLogger(__name__)
 REQUIRED_CHANNELS = [ch.strip() for ch in os.getenv("REQUIRED_CHANNELS", "").split(",") if ch.strip()]
+
+
 class DatabaseMiddleware(BaseMiddleware):
     def __init__(self, session_maker):
         self.session_maker = session_maker
 
     async def __call__(
-        self,
-        handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
-        event: Any,
-        data: Dict[str, Any]
+            self,
+            handler: Callable[[Any, Dict[str, Any]], Awaitable[Any]],
+            event: Any,
+            data: Dict[str, Any]
     ) -> Any:
         async with self.session_maker() as session:
             data["session"] = session
             return await handler(event, data)
+
 
 class ErrorHandlerMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
@@ -37,6 +42,7 @@ class ErrorHandlerMiddleware(BaseMiddleware):
                 await bot.send_message(event.from_user.id, "⚠️ Произошла ошибка!")
             return
 
+
 class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         # Пропускаем команду /start
@@ -44,11 +50,40 @@ class SubscriptionMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         bot = data.get("bot")
+        session = data.get("session")
         user_id = None
         if isinstance(event, Message):
             user_id = event.from_user.id
         elif isinstance(event, CallbackQuery):
             user_id = event.from_user.id
+
+        # --- Проверка блек-листа ---
+        if user_id and session:
+            entry = await get_blacklist_entry(session, user_id)
+            if entry:
+                # Получаем юзернейм админа
+                admin = await session.scalar(select(User).where(User.telegram_id == entry.banned_by))
+                admin_info = f"@{admin.username}" if admin and admin.username else str(entry.banned_by)
+                text = (
+                    f"⛔ Вы заблокированы в системе.\n"
+                    f"Забанил: {admin_info}\n"
+                    f"Причина: {entry.reason or 'Не указана'}\n\n"
+                    f"Если вы считаете, что это ошибка, Напишите тому, кто вас заблокировал.\n"
+                )
+                if isinstance(event, Message):
+                    await event.answer(text)
+                elif isinstance(event, CallbackQuery):
+                    await event.answer(text, show_alert=True)
+                return  # Не пропускаем дальше
+        # --- Конец проверки блек-листа ---
+
+        # --- Проверка роли пользователя ---
+        if user_id and session:
+            user = await session.scalar(select(User).where(User.telegram_id == user_id))
+            if user and user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+                return await handler(event, data)
+        # --- Конец проверки роли ---
+
         if user_id:
             not_subscribed = []
             for channel in REQUIRED_CHANNELS:
@@ -61,9 +96,9 @@ class SubscriptionMiddleware(BaseMiddleware):
             if not_subscribed:
                 channels_list = "\n".join([f"• {ch}" for ch in not_subscribed])
                 text = (
-                    "❗ Для использования бота подпишитесь на все каналы:\n"
-                    f"{channels_list}\n\n"
-                    "После подписки нажмите <b>Проверить подписку</b>."
+                        "❗ Для использования бота подпишитесь на все каналы:\n"
+                        f"{channels_list}\n\n"
+                        "После подписки нажмите <b>Проверить подписку</b>."
                 )
                 if isinstance(event, Message):
                     await event.answer(text, reply_markup=subscription_kb(), parse_mode="HTML")
