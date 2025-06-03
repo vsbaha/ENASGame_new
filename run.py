@@ -13,9 +13,13 @@ from logging.handlers import RotatingFileHandler
 
 load_dotenv()
 
+logger = logging.getLogger("ENASGameBot")
+
 async def main():
+    logger.info("Starting bot initialization...")
     await create_db()
-    
+    logger.info("Database checked/created.")
+
     bot = Bot(token=os.getenv("BOT_TOKEN"))
     dp = Dispatcher()
 
@@ -24,21 +28,27 @@ async def main():
     dp.update.middleware(ErrorHandlerMiddleware())
     dp.message.middleware(SubscriptionMiddleware())
     dp.callback_query.middleware(SubscriptionMiddleware())
+
     # Роутеры
     dp.include_router(common.router)
     dp.include_router(user.router)
     dp.include_router(admin.router)
     dp.include_router(super_admin.router)
-    
+
+    logger.info("Bot started polling.")
     await dp.start_polling(bot)
+    logger.info("Bot polling finished.")
 
 if __name__ == "__main__":
+    # Создаём папку logs, если её нет
+    os.makedirs("logs", exist_ok=True)
+
     logging.basicConfig(
-        level=logging.DEBUG,
-        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+        level=logging.INFO,
+        format="%(asctime)s - %(levelname)s - %(name)s - %(message)s",
         handlers=[
             RotatingFileHandler(
-                'bot.log',
+                'logs/bot.log',  # <-- путь к файлу логов в папке logs
                 encoding='utf-8',
                 maxBytes=5*1024*1024,
                 backupCount=3
@@ -46,4 +56,9 @@ if __name__ == "__main__":
             logging.StreamHandler()
         ]
     )
-    asyncio.run(main())
+    logger = logging.getLogger("ENASGameBot")
+    try:
+        logger.info("Bot is starting...")
+        asyncio.run(main())
+    except Exception as e:
+        logger.exception("Fatal error in main loop")

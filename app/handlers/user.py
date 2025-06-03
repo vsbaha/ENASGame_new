@@ -11,7 +11,10 @@ from app.services.notifications import notify_super_admins
 from app.states import EditTeam
 import os
 import re
+import logging
 
+logger = logging.getLogger(__name__)
+TEAM_APPROVED_CHANNEL_ID = int(os.getenv("TEAM_APPROVED_CHANNEL_ID"))
 # Импорты клавиатур
 from app.keyboards.user import (
     games_list_kb,
@@ -31,12 +34,13 @@ from app.database.db import User, Game, Tournament, GameFormat, Team, Player
 router = Router()
 
 @router.message(F.text == "🔍 Активные турниры")
-async def show_games(message: Message, session: AsyncSession):
-    """Показ списка игр"""
+async def show_games(message: Message, session: AsyncSession, state: FSMContext):
+    await state.clear()
+    logger.info(f"User {message.from_user.id} requested active games list")
     games = await session.scalars(select(Game))
     await message.answer(
         "🎮 Выберите игру:", 
-        reply_markup=games_list_kb(games)  # Исправлено название
+        reply_markup=games_list_kb(games)
     )
 
 @router.callback_query(F.data.startswith("view_tournament_"))
@@ -44,6 +48,7 @@ async def show_tournament_info(call: CallbackQuery, session: AsyncSession):
 
     """Детали турнира"""
     tournament_id = int(call.data.split("_")[2])
+    logger.info(f"User {call.from_user.id} requested info for tournament {tournament_id}")
     tournament = await session.get(Tournament, tournament_id)
     
     text = (
@@ -84,8 +89,8 @@ async def show_formats(call: CallbackQuery, session: AsyncSession, state: FSMCon
 
 @router.callback_query(F.data.startswith("register_"))
 async def start_team_registration(call: CallbackQuery, state: FSMContext, session: AsyncSession):
-    """Начало регистрации команды"""
     tournament_id = int(call.data.split("_")[1])
+    logger.info(f"User {call.from_user.id} starts team registration for tournament {tournament_id}")
     tournament = await session.get(Tournament, tournament_id)
     
     if not tournament or not tournament.is_active:
@@ -179,16 +184,57 @@ async def show_tournament_and_register(call: CallbackQuery, state: FSMContext, s
     )
     await state.update_data(tournament_id=tournament_id)
     await loading_msg.delete()
+    
+@router.message(F.text == "👥 Мои команды")
+async def my_teams(message: Message, session: AsyncSession, state: FSMContext):
+    await state.clear()
+    logger.info(f"User {message.from_user.id} requested their teams")
+    user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
+    if user and user.role == UserRole.SUPER_ADMIN:
+        # Супер-админ видит все одобренные команды
+        teams = await session.scalars(
+            select(Team).where(Team.status == TeamStatus.APPROVED)
+        )
+    else:
+        # Обычный пользователь — только свои одобренные команды
+        teams = await session.scalars(
+            select(Team)
+            .where(
+                ((Team.captain_tg_id == message.from_user.id) |
+                 (Team.id.in_(
+                    select(Player.team_id).where(Player.user_id == message.from_user.id)
+                 )))
+                & (Team.status == TeamStatus.APPROVED)
+            )
+        )
+    teams = list(teams)
+    if not teams:
+        await message.answer("У вас нет команд.")
+        return
+
+    text = "Ваши команды:\n"
+    builder = InlineKeyboardBuilder()
+    for team in teams:
+        is_captain = team.captain_tg_id == message.from_user.id
+        builder.button(
+            text=f"{team.team_name} {'(капитан)' if is_captain else ''}",
+            callback_data=f"my_team_{team.id}"
+        )
+    builder.adjust(2)
+    await message.answer(
+        text + "\nВыберите команду для подробностей:",
+        reply_markup=builder.as_markup()
+    )
 
 @router.message(RegisterTeam.TEAM_NAME)
-async def process_team_name(message: Message, state: FSMContext):
+async def process_team_name(message: Message, state: FSMContext, session: AsyncSession):
     team_name = message.text.strip()
     forbidden_names = [
         "team falcons", "onic", "team liquid", "team spirit", "insilio"
     ]
     # Проверка длины
-    if not team_name or len(team_name) < 2 or len(team_name) > 20:
-        await message.answer("❌ Введите корректное название команды (от 2 до 20 символов).")
+    if not team_name or len(team_name) < 5 or len(team_name) > 10:
+        await message.answer("❌ Введите корректное название команды (от 5 до 15 символов).")
         return
     # Проверка на буквы и цифры
     if not re.fullmatch(r"[A-Za-zА-Яа-я0-9 ]+", team_name):
@@ -199,12 +245,24 @@ async def process_team_name(message: Message, state: FSMContext):
         await message.answer("❌ Это название команды запрещено. Выберите другое.")
         return
 
+    # Проверка на уникальность названия среди одобренных команд
+    exists = await session.scalar(
+        select(Team).where(
+            (Team.team_name.ilike(team_name)) &
+            (Team.status == TeamStatus.APPROVED)
+        )
+    )
+    if exists:
+        await message.answer("❌ Команда с таким названием уже существует среди одобренных. Выберите другое название.")
+        return
+
     await state.update_data(team_name=team_name)
     await message.answer("Загрузите логотип команды (фото):")
     await state.set_state(RegisterTeam.TEAM_LOGO)
 
 @router.message(RegisterTeam.TEAM_LOGO)
 async def process_team_logo(message: Message, state: FSMContext, bot: Bot):
+    logger.info(f"User {message.from_user.id} uploads team logo")
     if not message.photo:
         await message.answer("❌ Пожалуйста, отправьте фотографию для логотипа команды.")
         return
@@ -216,6 +274,7 @@ async def process_team_logo(message: Message, state: FSMContext, bot: Bot):
 
 @router.message(RegisterTeam.ADD_PLAYERS)
 async def process_players(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
+    logger.info(f"User {message.from_user.id} enters team players: {message.text}")
     """Обработка списка игроков по username"""
     data = await state.get_data()
     tournament = await session.get(Tournament, data['tournament_id'])
@@ -268,47 +327,11 @@ async def process_players(message: Message, state: FSMContext, session: AsyncSes
     await state.clear()
 
 
-@router.message(F.text == "👥 Мои команды")
-async def my_teams(message: Message, session: AsyncSession):
-    user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
-    if user and user.role == UserRole.SUPER_ADMIN:
-        # Супер-админ видит все одобренные команды
-        teams = await session.scalars(
-            select(Team).where(Team.status == TeamStatus.APPROVED)
-        )
-    else:
-        # Обычный пользователь — только свои одобренные команды
-        teams = await session.scalars(
-            select(Team)
-            .where(
-                ((Team.captain_tg_id == message.from_user.id) |
-                 (Team.id.in_(
-                    select(Player.team_id).where(Player.user_id == message.from_user.id)
-                 )))
-                & (Team.status == TeamStatus.APPROVED)
-            )
-        )
-    teams = list(teams)
-    if not teams:
-        await message.answer("У вас нет команд.")
-        return
 
-    text = "Ваши команды:\n"
-    builder = InlineKeyboardBuilder()
-    for team in teams:
-        is_captain = team.captain_tg_id == message.from_user.id
-        builder.button(
-            text=f"{team.team_name} {'(капитан)' if is_captain else ''}",
-            callback_data=f"my_team_{team.id}"
-        )
-    builder.adjust(2)
-    await message.answer(
-        text + "\nВыберите команду для подробностей:",
-        reply_markup=builder.as_markup()
-    )
 
 @router.callback_query(F.data.startswith("my_team_"))
 async def show_my_team(call: CallbackQuery, session: AsyncSession):
+    logger.info(f"User {call.from_user.id} requested details for team {call.data}")
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
     if not team:
@@ -376,7 +399,8 @@ async def show_my_team(call: CallbackQuery, session: AsyncSession):
     )
 
 @router.callback_query(F.data == "back_to_games")
-async def back_to_games(call: CallbackQuery, session: AsyncSession):
+async def back_to_games(call: CallbackQuery, session: AsyncSession, state: FSMContext):
+    await state.clear()
     games = await session.scalars(select(Game))
     await call.message.edit_text(
         "🎮 Выберите игру:",
@@ -387,12 +411,12 @@ from aiogram.exceptions import TelegramAPIError
 
 @router.callback_query(F.data.startswith("approve_team_"))
 async def approve_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
+    logger.info(f"Admin {call.from_user.id} approves team {call.data}")
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
     if not team:
         await call.answer("Команда не найдена", show_alert=True)
         return
-    # Проверка, что команда ещё не обработана
     if team.status != TeamStatus.PENDING:
         await call.answer("Заявка уже обработана!", show_alert=True)
         await call.message.delete()
@@ -418,10 +442,44 @@ async def approve_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
                 reply_markup=captain_groups_url_kb() if tg_id == team.captain_tg_id else None
             )
         except TelegramAPIError:
-            pass  # Можно залогировать ошибку
+            pass
+
+    # --- Отправка информации о команде в отдельный канал ---
+    tournament = await session.get(Tournament, team.tournament_id)
+    captain = await session.scalar(select(User).where(User.telegram_id == team.captain_tg_id))
+    captain_username = f"@{captain.username}" if captain and captain.username else captain.full_name if captain else "N/A"
+    team_usernames = []
+    for player in players:
+        user = await session.scalar(select(User).where(User.telegram_id == player.user_id))
+        if user:
+            team_usernames.append(f"@{user.username}" if user.username else user.full_name or str(user.telegram_id))
+    text = (
+        f"🏆 Турнир: <b>{tournament.name if tournament else team.tournament_id}</b>\n"
+        f"👥 Название команды: <b>{team.team_name}</b>\n"
+        f"👑 Капитан: {captain_username}\n"
+        f"Участники: {', '.join(team_usernames)}"
+    )
+    try:
+        if team.logo_path and os.path.exists(team.logo_path):
+            logo = FSInputFile(team.logo_path)
+            await bot.send_photo(
+                TEAM_APPROVED_CHANNEL_ID,
+                photo=logo,
+                caption=text,
+                parse_mode="HTML"
+            )
+        else:
+            await bot.send_message(
+                TEAM_APPROVED_CHANNEL_ID,
+                text,
+                parse_mode="HTML"
+            )
+    except Exception as e:
+        logger.error(f"Failed to send approved team info to channel: {e}", exc_info=True)
 
 @router.callback_query(F.data.startswith("reject_team_"))
 async def reject_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
+    logger.info(f"Admin {call.from_user.id} rejects team {call.data}")
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
     if not team:
@@ -444,6 +502,7 @@ async def reject_team(call: CallbackQuery, session: AsyncSession, bot: Bot):
 
 @router.callback_query(F.data.startswith("delete_team_"))
 async def delete_team(call: CallbackQuery, session: AsyncSession):
+    logger.info(f"User {call.from_user.id} deletes team {call.data}")
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
     if not team:
@@ -452,8 +511,12 @@ async def delete_team(call: CallbackQuery, session: AsyncSession):
     if team.captain_tg_id != call.from_user.id:
         await call.answer("Только капитан может удалить команду!", show_alert=True)
         return
-    if team.logo_path and os.path.exists(team.logo_path):
-        os.remove(team.logo_path)
+    logo_path = team.logo_path
+    if logo_path and not logo_path.startswith("static/"):
+        logo_path = os.path.join("static", logo_path)
+    if logo_path and os.path.exists(logo_path):
+        os.remove(logo_path)
+        logger.info(f"Логотип команды удалён: {logo_path}")
     await session.delete(team)
     await session.commit()
 
@@ -517,6 +580,7 @@ async def back_to_my_teams(call: CallbackQuery, session: AsyncSession):
 
 @router.callback_query(F.data.regexp(r"^edit_team_\d+$"))
 async def edit_team_menu(call: CallbackQuery, state: FSMContext, session: AsyncSession):
+    logger.info(f"User {call.from_user.id} opens edit menu for team {call.data}")
     team_id = int(call.data.split("_")[2])
     team = await session.get(Team, team_id)
     if not team or team.captain_tg_id != call.from_user.id:
@@ -531,6 +595,7 @@ async def edit_team_menu(call: CallbackQuery, state: FSMContext, session: AsyncS
 
 @router.callback_query(F.data.regexp(r"^edit_team_name_\d+$"))
 async def edit_team_name(call: CallbackQuery, state: FSMContext):
+    logger.info(f"User {call.from_user.id} wants to edit team name for {call.data}")
     team_id = int(call.data.split("_")[3])
     await state.update_data(team_id=team_id)
     await call.message.answer("Введите новое название команды:")
@@ -538,6 +603,7 @@ async def edit_team_name(call: CallbackQuery, state: FSMContext):
 
 @router.message(EditTeam.NAME)
 async def process_edit_team_name(message: Message, state: FSMContext, session: AsyncSession):
+    logger.info(f"User {message.from_user.id} edits team name to: {message.text}")
     data = await state.get_data()
     team = await session.get(Team, data["team_id"])
     if not team or team.captain_tg_id != message.from_user.id:
@@ -551,6 +617,7 @@ async def process_edit_team_name(message: Message, state: FSMContext, session: A
     
 @router.callback_query(F.data.regexp(r"^edit_team_logo_\d+$"))
 async def edit_team_logo(call: CallbackQuery, state: FSMContext):
+    logger.info(f"User {call.from_user.id} wants to edit team logo for {call.data}")
     team_id = int(call.data.split("_")[3])
     await state.update_data(team_id=team_id)
     await call.message.answer("Загрузите новый логотип команды (фото):")
@@ -558,6 +625,7 @@ async def edit_team_logo(call: CallbackQuery, state: FSMContext):
 
 @router.message(EditTeam.LOGO, F.photo)
 async def process_edit_team_logo(message: Message, state: FSMContext, session: AsyncSession, bot: Bot):
+    logger.info(f"User {message.from_user.id} uploads new team logo")
     data = await state.get_data()
     team = await session.get(Team, data["team_id"])
     if not team or team.captain_tg_id != message.from_user.id:
@@ -573,6 +641,7 @@ async def process_edit_team_logo(message: Message, state: FSMContext, session: A
     
 @router.callback_query(F.data.regexp(r"^edit_team_players_\d+$"))
 async def edit_team_players(call: CallbackQuery, state: FSMContext):
+    logger.info(f"User {call.from_user.id} wants to edit team players for {call.data}")
     team_id = int(call.data.split("_")[3])
     await state.update_data(team_id=team_id)
     await call.message.answer("Введите новых участников через запятую (@user1, @user2, ...):\n(Вы — капитан, себя не указывайте)")
@@ -580,6 +649,7 @@ async def edit_team_players(call: CallbackQuery, state: FSMContext):
 
 @router.message(EditTeam.PLAYERS)
 async def process_edit_team_players(message: Message, state: FSMContext, session: AsyncSession):
+    logger.info(f"User {message.from_user.id} edits team players: {message.text}")
     data = await state.get_data()
     team = await session.get(Team, data["team_id"])
     if not team or team.captain_tg_id != message.from_user.id:
@@ -618,6 +688,9 @@ async def process_edit_team_players(message: Message, state: FSMContext, session
 
 @router.callback_query(F.data == "check_subscription")
 async def check_subscription(call: CallbackQuery):
+    logger.info(f"User {call.from_user.id} checked subscription")
     await call.answer("✅ Вы подписаны на все каналы!", show_alert=True)
     await call.message.delete()
     await call.message.answer("Проверка подписки завершена. Вы можете продолжать!", reply_markup=main_menu_kb())
+
+

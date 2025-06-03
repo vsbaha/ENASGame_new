@@ -28,6 +28,7 @@ class DatabaseMiddleware(BaseMiddleware):
     ) -> Any:
         async with self.session_maker() as session:
             data["session"] = session
+            logger.debug(f"Session started for event: {event}")
             return await handler(event, data)
 
 
@@ -47,6 +48,7 @@ class SubscriptionMiddleware(BaseMiddleware):
     async def __call__(self, handler, event, data):
         # Пропускаем команду /start
         if isinstance(event, Message) and event.text and event.text.startswith("/start"):
+            logger.info(f"User {event.from_user.id} triggered /start, skipping subscription check.")
             return await handler(event, data)
 
         bot = data.get("bot")
@@ -64,6 +66,7 @@ class SubscriptionMiddleware(BaseMiddleware):
                 # Получаем юзернейм админа
                 admin = await session.scalar(select(User).where(User.telegram_id == entry.banned_by))
                 admin_info = f"@{admin.username}" if admin and admin.username else str(entry.banned_by)
+                logger.warning(f"Blocked user {user_id} tried to use bot. Banned by {admin_info}. Reason: {entry.reason}")
                 text = (
                     f"⛔ Вы заблокированы в системе.\n"
                     f"Забанил: {admin_info}\n"
@@ -81,6 +84,7 @@ class SubscriptionMiddleware(BaseMiddleware):
         if user_id and session:
             user = await session.scalar(select(User).where(User.telegram_id == user_id))
             if user and user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+                logger.info(f"User {user_id} is admin/superadmin, skipping subscription check.")
                 return await handler(event, data)
         # --- Конец проверки роли ---
 
@@ -89,11 +93,14 @@ class SubscriptionMiddleware(BaseMiddleware):
             for channel in REQUIRED_CHANNELS:
                 try:
                     member = await bot.get_chat_member(channel, user_id)
+                    logger.debug(f"User {user_id} status in {channel}: {member.status}")
                     if member.status not in ("member", "administrator", "creator"):
                         not_subscribed.append(channel)
-                except Exception:
+                except Exception as e:
+                    logger.error(f"Failed to check subscription for user {user_id} in {channel}: {e}")
                     not_subscribed.append(channel)
             if not_subscribed:
+                logger.info(f"User {user_id} not subscribed to: {not_subscribed}")
                 channels_list = "\n".join([f"• {ch}" for ch in not_subscribed])
                 text = (
                         "❗ Для использования бота подпишитесь на все каналы:\n"
@@ -105,4 +112,5 @@ class SubscriptionMiddleware(BaseMiddleware):
                 elif isinstance(event, CallbackQuery):
                     await event.message.answer(text, reply_markup=subscription_kb(), parse_mode="HTML")
                 return  # Прерываем цепочку, если не подписан
+        logger.debug(f"User {user_id} passed all checks.")
         return await handler(event, data)  # <-- ВАЖНО! Пропускаем дальше, если подписан

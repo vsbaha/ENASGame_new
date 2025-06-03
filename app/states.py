@@ -1,3 +1,4 @@
+"""FSM состояния для различных сценариев работы с ботом."""
 from aiogram.fsm.state import StatesGroup, State
 
 class CreateTournament(StatesGroup):
@@ -17,7 +18,7 @@ class RegisterTeam(StatesGroup):
     CONFIRMATION = State()
     
 class AdminActions(StatesGroup):
-    WAITING_ADMIN_USERNAME = State()  # Замените WAITING_ADMIN_ID на это
+    WAITING_ADMIN_USERNAME = State()
     
 class EditTeam(StatesGroup):
     NAME = State()

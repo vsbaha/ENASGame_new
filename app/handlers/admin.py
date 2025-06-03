@@ -32,11 +32,12 @@ logger = logging.getLogger(__name__)
 # Главное админ-меню
 @router.message(F.text == "Админ-панель")
 async def admin_panel(message: Message):
+    logger.info(f"User {message.from_user.id} opened admin panel")
     await message.answer("⚙️ Админ-панель:", reply_markup=admin_main_menu())
     
 @router.callback_query(F.data == "stats")
 async def show_stats(call: CallbackQuery, session: AsyncSession):
-    """Показ статистики"""
+    logger.info(f"User {call.from_user.id} requested statistics")
     stats = await crud.get_statistics(session)
     text = (
         "📊 Статистика:\n"
@@ -45,63 +46,48 @@ async def show_stats(call: CallbackQuery, session: AsyncSession):
         f"👥 Зарегистрированных команд: {stats['teams']}"
     )
     await call.message.edit_text(text, reply_markup=back_to_admin_kb())
-    
+
 @router.callback_query(F.data == "back_to_admin")
 async def back_to_admin(call: CallbackQuery):
+    logger.info(f"User {call.from_user.id} returned to admin panel")
     await call.message.edit_text("⚙️ Админ-панель:", reply_markup=admin_main_menu())
-
 
 @router.callback_query(F.data == "manage_tournaments")
 async def manage_tournaments(call: CallbackQuery, session: AsyncSession):
-    """Управление турнирами (только одобренные для обычных админов)"""
-    user = await session.scalar(
-        select(User).where(User.telegram_id == call.from_user.id)
-    )
-    
-    # Для супер-админа показываем все турниры
+    logger.info(f"User {call.from_user.id} opened tournament management")
+    user = await session.scalar(select(User).where(User.telegram_id == call.from_user.id))
     if user.role == UserRole.SUPER_ADMIN:
         tournaments = await session.scalars(select(Tournament))
-    # Для обычного админа — только одобренные или созданные им
     else:
         tournaments = await session.scalars(
             select(Tournament)
             .where(Tournament.status == TournamentStatus.APPROVED)
             .where(Tournament.created_by == user.id)
         )
-    
     await call.message.edit_text(
-        "Управление турнирами:", 
+        "Управление турнирами:",
         reply_markup=tournaments_management_kb(tournaments)
     )
 
-
-    
-# Начало создания турнира
 @router.callback_query(F.data == "create_tournament")
 async def start_creation(call: CallbackQuery, state: FSMContext, session: AsyncSession):
-    """Начало создания турнира - выбор игры"""
+    logger.info(f"User {call.from_user.id} started tournament creation")
     try:
-        # Получаем список всех игр
         games = await session.scalars(select(Game))
         if not games:
             await call.answer("❌ Нет доступных игр! Сначала добавьте игры.", show_alert=True)
             return
-
-        # Создаем клавиатуру с играми
         builder = InlineKeyboardBuilder()
         for game in games:
             builder.button(
-                text=game.name, 
-                callback_data=f"admin_select_game_{game.id}"  # Исправленный префикс
+                text=game.name,
+                callback_data=f"admin_select_game_{game.id}"
             )
         builder.adjust(1)
-        
         await call.message.answer("🎮 Выберите игру:", reply_markup=builder.as_markup())
         await state.set_state(CreateTournament.SELECT_GAME)
-        logger.info(f"User {call.from_user.id} started tournament creation")
-
     except Exception as e:
-        logger.error(f"Error in start_creation: {e}")
+        logger.error(f"Error in start_creation: {e}", exc_info=True)
         await call.answer("⚠️ Произошла ошибка!", show_alert=True)
 
 @router.callback_query(
@@ -110,21 +96,16 @@ async def start_creation(call: CallbackQuery, state: FSMContext, session: AsyncS
 )
 async def select_game(call: CallbackQuery, state: FSMContext, session: AsyncSession):
     game_id = int(call.data.split("_")[3])
+    logger.info(f"User {call.from_user.id} selected game {game_id} for tournament creation")
     game = await session.get(Game, game_id)
     if not game:
         await call.answer("❌ Игра не найдена!", show_alert=True)
         return
-
-    # Получаем форматы для выбранной игры
-    formats = await session.scalars(
-        select(GameFormat).where(GameFormat.game_id == game_id)
-    )
+    formats = await session.scalars(select(GameFormat).where(GameFormat.game_id == game_id))
     formats = list(formats)
     if not formats:
         await call.answer("❌ Нет форматов для этой игры!", show_alert=True)
         return
-
-    # Клавиатура с форматами
     builder = InlineKeyboardBuilder()
     for fmt in formats:
         builder.button(
@@ -140,15 +121,14 @@ async def select_game(call: CallbackQuery, state: FSMContext, session: AsyncSess
     await state.update_data(game_id=game_id)
     await state.set_state(CreateTournament.SELECT_FORMAT)
 
-# Обработка выбора формата
 @router.callback_query(F.data.startswith("admin_select_format_"))
 async def select_format(call: CallbackQuery, state: FSMContext, session: AsyncSession):
     format_id = int(call.data.split("_")[3])
+    logger.info(f"User {call.from_user.id} selected format {format_id} for tournament creation")
     fmt = await session.get(GameFormat, format_id)
     if not fmt:
         await call.answer("❌ Формат не найден!", show_alert=True)
         return
-
     await state.update_data(format_id=format_id)
     await call.message.edit_text(
         f"Формат выбран: <b>{fmt.format_name}</b>\n🏷 Введите название турнира:",
@@ -156,66 +136,62 @@ async def select_format(call: CallbackQuery, state: FSMContext, session: AsyncSe
     )
     await state.set_state(CreateTournament.NAME)
 
-# Обработка названия
 @router.message(CreateTournament.NAME)
 async def process_name(message: Message, state: FSMContext):
+    logger.info(f"User {message.from_user.id} entered tournament name: {message.text}")
     await state.update_data(name=message.text)
     await message.answer("🌄 Загрузите логотип (фото):")
     await state.set_state(CreateTournament.LOGO)
 
-# Обработка логотипа
 @router.message(CreateTournament.LOGO, F.photo)
 async def process_logo(message: Message, state: FSMContext, bot: Bot):
+    logger.info(f"User {message.from_user.id} uploaded tournament logo")
     file_id = message.photo[-1].file_id
     file_path = await save_file(bot, file_id, "tournaments/logos")
     await state.update_data(logo_path=file_path)
     await message.answer("📅 Введите дату начала (ДД.ММ.ГГГГ ЧЧ:ММ):")
     await state.set_state(CreateTournament.START_DATE)
 
-# Обработка даты
 @router.message(CreateTournament.START_DATE)
 async def process_date(message: Message, state: FSMContext):
     try:
         date = datetime.strptime(message.text, "%d.%m.%Y %H:%M")
+        logger.info(f"User {message.from_user.id} entered tournament start date: {message.text}")
         await state.update_data(start_date=date)
         await message.answer("📝 Введите описание:")
         await state.set_state(CreateTournament.DESCRIPTION)
     except ValueError:
+        logger.warning(f"User {message.from_user.id} entered invalid date: {message.text}")
         await message.answer("❌ Неверный формат даты! Пример: 01.01.2025 14:00")
 
-# Обработка описания
 @router.message(CreateTournament.DESCRIPTION)
 async def process_description(message: Message, state: FSMContext):
+    logger.info(f"User {message.from_user.id} entered tournament description")
     await state.update_data(description=message.text)
     await message.answer("📄 Загрузите регламент (PDF):")
     await state.set_state(CreateTournament.REGULATIONS)
 
-# Обработка регламента
 @router.message(CreateTournament.REGULATIONS, F.document)
 async def finish_creation(message: Message, state: FSMContext, bot: Bot, session: AsyncSession):
     if message.document.mime_type != "application/pdf":
+        logger.warning(f"User {message.from_user.id} tried to upload non-PDF as regulations")
         return await message.answer("❌ Только PDF-файлы!")
-    
-    user = await session.scalar(
-        select(User).where(User.telegram_id == message.from_user.id))
-    
+    user = await session.scalar(select(User).where(User.telegram_id == message.from_user.id))
     if not user:
+        logger.error(f"User {message.from_user.id} not found in DB during tournament creation")
         await message.answer("❌ Пользователь не найден! Вызовите /start")
         await state.clear()
         return
-    
     file_path = await save_file(bot, message.document.file_id, "tournaments/regulations")
     data = await state.get_data()
-
     status = (
-        TournamentStatus.APPROVED 
-        if user.role == UserRole.SUPER_ADMIN 
+        TournamentStatus.APPROVED
+        if user.role == UserRole.SUPER_ADMIN
         else TournamentStatus.PENDING
     )
-    
     tournament = Tournament(
         game_id=data['game_id'],
-        format_id=data['format_id'],  # <--- добавьте это!
+        format_id=data['format_id'],
         name=data['name'],
         logo_path=data['logo_path'],
         start_date=data['start_date'],
@@ -225,18 +201,15 @@ async def finish_creation(message: Message, state: FSMContext, bot: Bot, session
         status=status,
         created_by=user.id
     )
-    
     session.add(tournament)
     await session.commit()
-    
+    logger.info(f"Tournament '{data['name']}' created by user {message.from_user.id} (status: {status})")
     if status == TournamentStatus.PENDING:
-        # Передаем session в функцию
         await notify_super_admins(
             bot=bot,
             text=f"Новый турнир на модерации: {data['name']}",
-            session=session 
+            session=session
         )
-    
     await message.answer(
         f"✅ Турнир <b>{data['name']}</b> успешно создан, и был отправлен на модерацию!\n"
         f"Дата старта: {data['start_date'].strftime('%d.%m.%Y %H:%M')}",
@@ -567,8 +540,10 @@ async def ban_user(message: Message, session: AsyncSession):
         user_id = int(parts[1])
         reason = parts[2] if len(parts) > 2 else "Без причины"
         await add_to_blacklist(session, user_id, message.from_user.id, reason)
+        logger.info(f"SuperAdmin {message.from_user.id} banned user {user_id}. Reason: {reason}")
         await message.answer(f"Пользователь {user_id} забанен. Причина: {reason}")
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to ban user. Message: {message.text}. Error: {e}", exc_info=True)
         await message.answer("Используйте: /ban <user_id> <причина>")
 
 @router.message(SuperAdminFilter(), F.text.startswith("/unban"))
@@ -576,6 +551,8 @@ async def unban_user(message: Message, session: AsyncSession):
     try:
         user_id = int(message.text.split()[1])
         await remove_from_blacklist(session, user_id)
+        logger.info(f"SuperAdmin {message.from_user.id} unbanned user {user_id}")
         await message.answer(f"Пользователь {user_id} удалён из блек-листа.")
-    except Exception:
+    except Exception as e:
+        logger.error(f"Failed to unban user. Message: {message.text}. Error: {e}", exc_info=True)
         await message.answer("Используйте: /unban <user_id>")
